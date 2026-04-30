@@ -4,6 +4,7 @@ struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @State private var focusValue: Double = 0.5
     @State private var syncOffset: Double = -25.0
+    @State private var readoutTimeMs: Double = 9.18
     @State private var selectedLens: CameraManager.LensType = .main
 
     var body: some View {
@@ -66,6 +67,11 @@ struct ContentView: View {
                 Slider(value: $syncOffset, in: -50.0...50.0)
             }.padding(.horizontal)
 
+            VStack(alignment: .leading) {
+                Text("Readout Time (ms): \(readoutTimeMs, specifier: "%.2f")")
+                Slider(value: $readoutTimeMs, in: 5.0...15.0)
+            }.padding(.horizontal)
+
             HStack {
                 Button(cameraManager.awbLocked ? "Unlock AWB" : "Lock AWB") {
                     if cameraManager.awbLocked {
@@ -95,12 +101,34 @@ struct ContentView: View {
         .onAppear {
             cameraManager.checkPermissionAndStart()
             cameraManager.setFocus(Float(focusValue))
+            MotionManager.shared.startUpdates()
+
+            cameraManager.onFrame = { pixelBuffer, timestamp in
+                let frameTime = CMTimeGetSeconds(timestamp)
+                let targetTime = frameTime + (syncOffset / 1000.0)
+                let bottomTime = targetTime + (readoutTimeMs / 1000.0)
+
+                guard let topQuat = MotionManager.shared.getQuaternion(at: targetTime),
+                      let bottomQuat = MotionManager.shared.getQuaternion(at: bottomTime) else { return }
+
+                NetworkManager.shared.sendFrame(
+                    buffer: pixelBuffer,
+                    frameTimestamp: frameTime,
+                    topQuat: topQuat,
+                    bottomQuat: bottomQuat
+                )
+            }
         }
         .onChange(of: focusValue) { newValue in
             cameraManager.setFocus(Float(newValue))
         }
+        .onChange(of: syncOffset) { newValue in
+            AppSyncConfig.syncOffsetMs = newValue
+        }
         .onDisappear {
+            cameraManager.onFrame = nil
             cameraManager.stopRunning()
+            MotionManager.shared.stopUpdates()
         }
     }
 }
