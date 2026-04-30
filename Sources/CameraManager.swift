@@ -36,7 +36,7 @@ class CameraManager: NSObject, ObservableObject {
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var recordingStartTime: CMTime?
     private var frameCount: Int64 = 0
-    private var _isRecording = false
+    private var recordingActive = false
 
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
 
@@ -243,7 +243,7 @@ class CameraManager: NSObject, ObservableObject {
     }
 
     func startRecording() {
-        guard !_isRecording else { return }
+        guard !recordingActive else { return }
 
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let filename = "calib_\(Int(Date().timeIntervalSince1970)).mp4"
@@ -282,7 +282,7 @@ class CameraManager: NSObject, ObservableObject {
                 self.pixelBufferAdaptor = adaptor
                 self.recordingStartTime = nil
                 self.frameCount = 0
-                self._isRecording = true
+                self.recordingActive = true
                 DispatchQueue.main.async {
                     self.isRecording = true
                     self.recordedFileURL = nil
@@ -295,12 +295,12 @@ class CameraManager: NSObject, ObservableObject {
     }
 
     func stopRecording() {
-        guard _isRecording else { return }
+        guard recordingActive else { return }
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
 
-            self._isRecording = false
+            self.recordingActive = false
             self.pixelBufferAdaptor = nil
 
             let writer = self.assetWriter
@@ -349,7 +349,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let scaled = scaleTo1080x1440(pixelBuffer)
 
-        if _isRecording, let input = assetWriterInput, input.isReadyForMoreMediaData {
+        if recordingActive, let input = assetWriterInput, input.isReadyForMoreMediaData {
             if assetWriter?.status == .unknown {
                 recordingStartTime = timestamp
                 assetWriter?.startWriting()
