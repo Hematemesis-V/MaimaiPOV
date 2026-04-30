@@ -68,6 +68,7 @@ class NetworkManager {
         buffer: CVPixelBuffer,
         frameTimestamp: Double,
         topQuat: simd_quatf,
+        centerQuat: simd_quatf,
         bottomQuat: simd_quatf
     ) {
         guard let conn = connection else { return }
@@ -91,12 +92,17 @@ class NetworkManager {
 
         let payloadSize = UInt32(ySize + uvSize)
 
-        var header = Data(capacity: 44)
+        var header = Data(capacity: 64)
+        if let syncData = "SYNC".data(using: .ascii) { header.append(syncData) }
         withUnsafeBytes(of: frameTimestamp) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: topQuat.vector.x) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: topQuat.vector.y) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: topQuat.vector.z) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: topQuat.vector.w) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: centerQuat.vector.x) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: centerQuat.vector.y) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: centerQuat.vector.z) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: centerQuat.vector.w) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: bottomQuat.vector.x) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: bottomQuat.vector.y) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: bottomQuat.vector.z) { header.append(contentsOf: $0) }

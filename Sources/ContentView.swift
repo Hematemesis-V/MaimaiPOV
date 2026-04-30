@@ -106,18 +106,22 @@ struct ContentView: View {
 
             cameraManager.onFrame = { pixelBuffer, timestamp in
                 let frameTime = CMTimeGetSeconds(timestamp)
-                let targetTime = frameTime + (syncOffset / 1000.0)
-                let bottomTime = targetTime + (readoutTimeMs / 1000.0)
+                let centerTime = frameTime + (syncOffset / 1000.0)
+                let topTime = centerTime - (readoutTimeMs / 2000.0)
+                let bottomTime = centerTime + (readoutTimeMs / 2000.0)
 
-                guard let topQuat = MotionManager.shared.getQuaternion(at: targetTime),
-                      let bottomQuat = MotionManager.shared.getQuaternion(at: bottomTime) else { return }
+                if let topQuat = MotionManager.shared.getQuaternion(at: topTime),
+                   let centerQuat = MotionManager.shared.getQuaternion(at: centerTime),
+                   let bottomQuat = MotionManager.shared.getQuaternion(at: bottomTime) {
 
-                NetworkManager.shared.sendFrame(
-                    buffer: pixelBuffer,
-                    frameTimestamp: frameTime,
-                    topQuat: topQuat,
-                    bottomQuat: bottomQuat
-                )
+                    NetworkManager.shared.sendFrame(
+                        buffer: pixelBuffer,
+                        frameTimestamp: centerTime,
+                        topQuat: topQuat,
+                        centerQuat: centerQuat,
+                        bottomQuat: bottomQuat
+                    )
+                }
             }
         }
         .onChange(of: focusValue) { newValue in
