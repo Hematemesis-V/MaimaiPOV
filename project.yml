@@ -8,6 +8,7 @@ targets:
     deploymentTarget: "15.0"
     sources: [Sources]
     info:
+      path: Info.plist
       properties:
         UILaunchScreen: {}
         NSCameraUsageDescription: "需要获取片门全开的超广角画面以进行 PC 端防抖运算。"
