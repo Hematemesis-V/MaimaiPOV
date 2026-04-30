@@ -26,6 +26,17 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
+            Picker("Lens", selection: $cameraManager.activeLens) {
+                ForEach(CameraManager.LensType.allCases, id: \.self) { lens in
+                    Text(lens.rawValue).tag(lens)
+                }
+            }
+            .pickerStyle(SegmentedPickerStyle())
+            .padding(.horizontal)
+            .onChange(of: cameraManager.activeLens) { newLens in
+                cameraManager.switchLens(to: newLens)
+            }
+
             VStack(alignment: .leading) {
                 Text("Focus: \(focusValue, specifier: "%.2f")")
                 Slider(value: $focusValue, in: 0.0...1.0)

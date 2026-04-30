@@ -5,6 +5,18 @@ import UIKit
 
 class CameraManager: NSObject, ObservableObject {
 
+    enum LensType: String, CaseIterable {
+        case main = "Main (1x)"
+        case ultraWide = "Ultra Wide (0.5x)"
+
+        var deviceType: AVCaptureDevice.DeviceType {
+            switch self {
+            case .main:      return .builtInWideAngleCamera
+            case .ultraWide: return .builtInUltraWideCamera
+            }
+        }
+    }
+
     let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "com.maimai.camera", qos: .userInteractive)
@@ -12,8 +24,11 @@ class CameraManager: NSObject, ObservableObject {
 
     @Published var isRunning = false
     @Published var awbLocked = false
+    @Published var cameraAuthorized = false
+    @Published var activeLens: LensType = .main
 
     private var currentDevice: AVCaptureDevice?
+    private var currentInput: AVCaptureDeviceInput?
 
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
 
@@ -43,16 +58,15 @@ class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    @Published var cameraAuthorized = false
-
     func checkPermissionAndStart() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             DispatchQueue.main.async { self.cameraAuthorized = true }
             sessionQueue.async { [weak self] in
-                self?.configureSession()
-                self?.session.startRunning()
-                DispatchQueue.main.async { self?.isRunning = self?.session.isRunning ?? false }
+                guard let self else { return }
+                self.configureSession(for: self.activeLens)
+                self.session.startRunning()
+                DispatchQueue.main.async { self.isRunning = self.session.isRunning }
             }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -60,7 +74,7 @@ class CameraManager: NSObject, ObservableObject {
                 DispatchQueue.main.async { self.cameraAuthorized = granted }
                 if granted {
                     self.sessionQueue.async {
-                        self.configureSession()
+                        self.configureSession(for: self.activeLens)
                         self.session.startRunning()
                         DispatchQueue.main.async { self.isRunning = self.session.isRunning }
                     }
@@ -71,44 +85,62 @@ class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    private func configureSession() {
+    private func configureSession(for lens: LensType) {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-            print("CameraManager: No back wide-angle camera")
+        if let existing = currentInput {
+            session.removeInput(existing)
+            currentInput = nil
+        }
+
+        guard let device = AVCaptureDevice.default(lens.deviceType, for: .video, position: .back) else {
+            print("CameraManager: No \(lens.rawValue) camera")
             return
         }
         currentDevice = device
 
         guard let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else {
-            print("CameraManager: Cannot add input")
+            print("CameraManager: Cannot add input for \(lens.rawValue)")
             return
         }
         session.addInput(input)
+        currentInput = input
 
         configureFormat(for: device)
 
-        videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-        ]
-        videoOutput.alwaysDiscardsLateVideoFrames = true
+        if session.outputs.isEmpty {
+            videoOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            ]
+            videoOutput.alwaysDiscardsLateVideoFrames = true
 
-        guard session.canAddOutput(videoOutput) else {
-            print("CameraManager: Cannot add video output")
-            return
-        }
-        session.addOutput(videoOutput)
-
-        for connection in videoOutput.connections {
-            if connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = .off
+            guard session.canAddOutput(videoOutput) else {
+                print("CameraManager: Cannot add video output")
+                return
             }
+            session.addOutput(videoOutput)
+
+            for connection in videoOutput.connections {
+                if connection.isVideoStabilizationSupported {
+                    connection.preferredVideoStabilizationMode = .off
+                }
+            }
+
+            videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
         }
 
         configureExposure(for: device)
-        videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
+    }
+
+    func switchLens(to lens: LensType) {
+        guard lens != activeLens else { return }
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.configureSession(for: lens)
+            DispatchQueue.main.async { self.activeLens = lens }
+        }
     }
 
     private func configureFormat(for device: AVCaptureDevice) {
