@@ -19,9 +19,6 @@ class CameraManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        sessionQueue.async { [weak self] in
-            self?.configureSession()
-        }
     }
 
     deinit {
@@ -46,16 +43,31 @@ class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    static func requestPermission(completion: @escaping (Bool) -> Void) {
+    @Published var cameraAuthorized = false
+
+    func checkPermissionAndStart() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            completion(true)
+            DispatchQueue.main.async { self.cameraAuthorized = true }
+            sessionQueue.async { [weak self] in
+                self?.configureSession()
+                self?.session.startRunning()
+                DispatchQueue.main.async { self?.isRunning = self?.session.isRunning ?? false }
+            }
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async { completion(granted) }
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                DispatchQueue.main.async { self.cameraAuthorized = granted }
+                if granted {
+                    self.sessionQueue.async {
+                        self.configureSession()
+                        self.session.startRunning()
+                        DispatchQueue.main.async { self.isRunning = self.session.isRunning }
+                    }
+                }
             }
         default:
-            completion(false)
+            DispatchQueue.main.async { self.cameraAuthorized = false }
         }
     }
 

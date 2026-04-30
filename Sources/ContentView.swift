@@ -4,7 +4,6 @@ struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @State private var focusValue: Double = 0.5
     @State private var syncOffset: Double = -25.0
-    @State private var cameraAuthorized = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -12,7 +11,7 @@ struct ContentView: View {
                 .font(.headline)
                 .foregroundColor(.cyan)
 
-            if cameraAuthorized {
+            if cameraManager.cameraAuthorized {
                 CameraPreviewView(session: cameraManager.session)
                     .aspectRatio(3.0 / 4.0, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -21,7 +20,7 @@ struct ContentView: View {
                     .fill(Color.black)
                     .aspectRatio(3.0 / 4.0, contentMode: .fit)
                     .overlay(
-                        Text(cameraAuthorized ? "" : "Camera Not Authorized")
+                        Text("Camera Not Authorized")
                             .foregroundColor(.gray)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -56,13 +55,8 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
-            CameraManager.requestPermission { granted in
-                cameraAuthorized = granted
-                if granted {
-                    cameraManager.startRunning()
-                    cameraManager.setFocus(Float(focusValue))
-                }
-            }
+            cameraManager.checkPermissionAndStart()
+            cameraManager.setFocus(Float(focusValue))
         }
         .onChange(of: focusValue) { newValue in
             cameraManager.setFocus(Float(newValue))
