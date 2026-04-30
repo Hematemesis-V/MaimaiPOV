@@ -36,6 +36,7 @@ class CameraManager: NSObject, ObservableObject {
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var recordingStartTime: CMTime?
     private var frameCount: Int64 = 0
+    private var _isRecording = false
 
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
 
@@ -242,7 +243,7 @@ class CameraManager: NSObject, ObservableObject {
     }
 
     func startRecording() {
-        guard !isRecording else { return }
+        guard !_isRecording else { return }
 
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let filename = "calib_\(Int(Date().timeIntervalSince1970)).mp4"
@@ -281,6 +282,7 @@ class CameraManager: NSObject, ObservableObject {
                 self.pixelBufferAdaptor = adaptor
                 self.recordingStartTime = nil
                 self.frameCount = 0
+                self._isRecording = true
                 DispatchQueue.main.async {
                     self.isRecording = true
                     self.recordedFileURL = nil
@@ -293,26 +295,44 @@ class CameraManager: NSObject, ObservableObject {
     }
 
     func stopRecording() {
-        guard isRecording else { return }
+        guard _isRecording else { return }
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
 
+            self._isRecording = false
             self.pixelBufferAdaptor = nil
-            self.assetWriterInput?.markAsFinished()
 
             let writer = self.assetWriter
-            writer?.finishWriting { [weak self] in
-                guard let self else { return }
-                let url = writer?.outputURL
-                DispatchQueue.main.async {
-                    self.isRecording = false
-                    self.recordedFileURL = url
+            let status = writer?.status ?? .unknown
+
+            if status == .writing {
+                self.assetWriterInput?.markAsFinished()
+                writer?.finishWriting { [weak self] in
+                    guard let self else { return }
+                    let url = writer?.outputURL
+                    DispatchQueue.main.async {
+                        self.isRecording = false
+                        self.recordedFileURL = url
+                    }
+                    print("CameraManager: Recording saved to \(url?.lastPathComponent ?? "unknown"), \(self.frameCount) frames")
+                    self.assetWriter = nil
+                    self.assetWriterInput = nil
+                    self.recordingStartTime = nil
                 }
-                print("CameraManager: Recording saved to \(url?.lastPathComponent ?? "unknown")")
+            } else {
+                if status == .failed {
+                    print("CameraManager: Writer failed: \(writer?.error?.localizedDescription ?? "unknown")")
+                }
+                if status == .unknown {
+                    print("CameraManager: Writer never started, discarding")
+                }
                 self.assetWriter = nil
                 self.assetWriterInput = nil
                 self.recordingStartTime = nil
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                }
             }
         }
     }
@@ -329,7 +349,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let scaled = scaleTo1080x1440(pixelBuffer)
 
-        if isRecording, let input = assetWriterInput, input.isReadyForMoreMediaData {
+        if _isRecording, let input = assetWriterInput, input.isReadyForMoreMediaData {
             if assetWriter?.status == .unknown {
                 recordingStartTime = timestamp
                 assetWriter?.startWriting()
