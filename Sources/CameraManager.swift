@@ -146,9 +146,9 @@ class CameraManager: NSObject, ObservableObject {
         do {
             try device.lockForConfiguration()
             let duration = CMTime(value: 1, timescale: 240)
-            device.setExposureModeCustom(duration: duration, iso: device.currentISO, completionHandler: nil)
+            device.setExposureModeCustom(duration: duration, iso: AVCaptureDevice.currentISO, completionHandler: nil)
             device.unlockForConfiguration()
-            print("CameraManager: Exposure locked 1/240s, ISO=\(device.currentISO)")
+            print("CameraManager: Exposure locked 1/240s, ISO=\(AVCaptureDevice.currentISO)")
         } catch {
             print("CameraManager: Exposure config failed: \(error)")
         }
@@ -194,7 +194,7 @@ class CameraManager: NSObject, ObservableObject {
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 
     func captureOutput(
-        _ output: AVCaptureVideoDataOutput,
+        _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
