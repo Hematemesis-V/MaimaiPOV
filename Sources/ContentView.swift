@@ -13,9 +13,27 @@ struct ContentView: View {
                 .foregroundColor(.cyan)
 
             if cameraManager.cameraAuthorized {
-                CameraPreviewView(session: cameraManager.session)
-                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                ZStack(alignment: .topTrailing) {
+                    CameraPreviewView(session: cameraManager.session)
+                        .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    if cameraManager.isRecording {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 10, height: 10)
+                            Text("REC")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                                .foregroundColor(.red)
+                        }
+                        .padding(8)
+                        .background(Color.black.opacity(0.5))
+                        .clipShape(Capsule())
+                        .padding(8)
+                    }
+                }
             } else {
                 Rectangle()
                     .fill(Color.black)
@@ -61,9 +79,24 @@ struct ContentView: View {
 
                 Spacer()
 
-                Text(cameraManager.isRunning ? "Camera: Running" : "Camera: Stopped")
-                    .foregroundColor(cameraManager.isRunning ? .green : .orange)
-            }.padding()
+                Button(cameraManager.isRecording ? "Stop Rec" : "Rec") {
+                    if cameraManager.isRecording {
+                        cameraManager.stopRecording()
+                    } else {
+                        cameraManager.startRecording()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(cameraManager.isRecording ? .red : .gray)
+            }
+            .padding(.horizontal)
+
+            if let url = cameraManager.recordedFileURL {
+                Text("Saved: \(url.lastPathComponent)")
+                    .font(.caption)
+                    .foregroundColor(.green)
+                    .padding(.horizontal)
+            }
         }
         .preferredColorScheme(.dark)
         .onAppear {

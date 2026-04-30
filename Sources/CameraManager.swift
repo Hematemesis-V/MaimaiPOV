@@ -26,9 +26,16 @@ class CameraManager: NSObject, ObservableObject {
     @Published var awbLocked = false
     @Published var cameraAuthorized = false
     @Published var activeLens: LensType = .main
+    @Published var isRecording = false
+    @Published var recordedFileURL: URL?
 
     private var currentDevice: AVCaptureDevice?
     private var currentInput: AVCaptureDeviceInput?
+    private var assetWriter: AVAssetWriter?
+    private var assetWriterInput: AVAssetWriterInput?
+    private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    private var recordingStartTime: CMTime?
+    private var frameCount: Int64 = 0
 
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
 
@@ -233,6 +240,74 @@ class CameraManager: NSObject, ObservableObject {
             print("CameraManager: WB unlock failed: \(error)")
         }
     }
+
+    func startRecording() {
+        guard !isRecording else { return }
+
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let filename = "calib_\(Int(Date().timeIntervalSince1970)).mp4"
+        let fileURL = docs.appendingPathComponent(filename)
+
+        do {
+            let writer = try AVAssetWriter(outputURL: fileURL, fileType: .mp4)
+
+            let settings: [String: Any] = [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: 1080,
+                AVVideoHeightKey: 1440
+            ]
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+            input.expectsMediaDataInRealTime = true
+
+            let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+                assetWriterInput: input,
+                sourcePixelBufferAttributes: [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                    kCVPixelBufferWidthKey as String: 1080,
+                    kCVPixelBufferHeightKey as String: 1440
+                ]
+            )
+
+            guard writer.canAdd(input) else {
+                print("CameraManager: Cannot add writer input")
+                return
+            }
+            writer.addInput(input)
+
+            assetWriter = writer
+            assetWriterInput = input
+            pixelBufferAdaptor = adaptor
+            recordingStartTime = nil
+            frameCount = 0
+
+            DispatchQueue.main.async {
+                self.isRecording = true
+                self.recordedFileURL = nil
+            }
+            print("CameraManager: Recording to \(fileURL.lastPathComponent)")
+        } catch {
+            print("CameraManager: AssetWriter init failed: \(error)")
+        }
+    }
+
+    func stopRecording() {
+        guard isRecording else { return }
+
+        assetWriterInput?.markAsFinished()
+        assetWriter?.finishWriting { [weak self] in
+            guard let self else { return }
+            let url = self.assetWriter?.outputURL
+            DispatchQueue.main.async {
+                self.isRecording = false
+                self.recordedFileURL = url
+            }
+            print("CameraManager: Recording saved to \(url?.lastPathComponent ?? "unknown")")
+            self.assetWriter = nil
+            self.assetWriterInput = nil
+            self.pixelBufferAdaptor = nil
+            self.recordingStartTime = nil
+        }
+    }
 }
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -245,6 +320,20 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let scaled = scaleTo1080x1440(pixelBuffer)
+
+        if isRecording, let input = assetWriterInput, input.isReadyForMoreMediaData {
+            if assetWriter?.status == .unknown {
+                recordingStartTime = timestamp
+                assetWriter?.startWriting()
+                assetWriter?.startSession(atSourceTime: timestamp)
+            }
+
+            if let adaptor = pixelBufferAdaptor, assetWriter?.status == .writing {
+                adaptor.append(scaled, withPresentationTime: timestamp)
+                frameCount += 1
+            }
+        }
+
         onFrame?(scaled, timestamp)
     }
 
