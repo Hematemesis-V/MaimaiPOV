@@ -274,15 +274,17 @@ class CameraManager: NSObject, ObservableObject {
             }
             writer.add(input)
 
-            assetWriter = writer
-            assetWriterInput = input
-            pixelBufferAdaptor = adaptor
-            recordingStartTime = nil
-            frameCount = 0
-
-            DispatchQueue.main.async {
-                self.isRecording = true
-                self.recordedFileURL = nil
+            sessionQueue.async { [weak self] in
+                guard let self else { return }
+                self.assetWriter = writer
+                self.assetWriterInput = input
+                self.pixelBufferAdaptor = adaptor
+                self.recordingStartTime = nil
+                self.frameCount = 0
+                DispatchQueue.main.async {
+                    self.isRecording = true
+                    self.recordedFileURL = nil
+                }
             }
             print("CameraManager: Recording to \(fileURL.lastPathComponent)")
         } catch {
@@ -293,19 +295,25 @@ class CameraManager: NSObject, ObservableObject {
     func stopRecording() {
         guard isRecording else { return }
 
-        assetWriterInput?.markAsFinished()
-        assetWriter?.finishWriting { [weak self] in
+        sessionQueue.async { [weak self] in
             guard let self else { return }
-            let url = self.assetWriter?.outputURL
-            DispatchQueue.main.async {
-                self.isRecording = false
-                self.recordedFileURL = url
-            }
-            print("CameraManager: Recording saved to \(url?.lastPathComponent ?? "unknown")")
-            self.assetWriter = nil
-            self.assetWriterInput = nil
+
             self.pixelBufferAdaptor = nil
-            self.recordingStartTime = nil
+            self.assetWriterInput?.markAsFinished()
+
+            let writer = self.assetWriter
+            writer?.finishWriting { [weak self] in
+                guard let self else { return }
+                let url = writer?.outputURL
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    self.recordedFileURL = url
+                }
+                print("CameraManager: Recording saved to \(url?.lastPathComponent ?? "unknown")")
+                self.assetWriter = nil
+                self.assetWriterInput = nil
+                self.recordingStartTime = nil
+            }
         }
     }
 }
