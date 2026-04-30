@@ -1,3 +1,4 @@
+import simd
 import Foundation
 import Network
 import VideoToolbox

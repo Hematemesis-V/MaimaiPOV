@@ -1,3 +1,4 @@
+import CoreMedia
 import SwiftUI
 
 struct ContentView: View {
