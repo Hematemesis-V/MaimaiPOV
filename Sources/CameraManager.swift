@@ -272,7 +272,7 @@ class CameraManager: NSObject, ObservableObject {
                 print("CameraManager: Cannot add writer input")
                 return
             }
-            writer.addInput(input)
+            writer.add(input)
 
             assetWriter = writer
             assetWriterInput = input
