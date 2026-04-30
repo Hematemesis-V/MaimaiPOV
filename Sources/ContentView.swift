@@ -90,13 +90,6 @@ struct ContentView: View {
                 .tint(cameraManager.isRecording ? .red : .gray)
             }
             .padding(.horizontal)
-
-            if let url = cameraManager.recordedFileURL {
-                Text("Saved: \(url.lastPathComponent)")
-                    .font(.caption)
-                    .foregroundColor(.green)
-                    .padding(.horizontal)
-            }
         }
         .preferredColorScheme(.dark)
         .onAppear {

@@ -13,6 +13,7 @@ targets:
         UILaunchScreen: {}
         NSCameraUsageDescription: "需要获取片门全开的超广角画面以进行 PC 端防抖运算。"
         NSLocalNetworkUsageDescription: "需要通过 USB usbmuxd 映射向 PC 发送极低延迟视频流。"
+        NSPhotoLibraryAddUsageDescription: "需要将镜头标定视频保存到系统相册。"
     settings:
       CODE_SIGN_IDENTITY: ""
       CODE_SIGNING_REQUIRED: "NO"

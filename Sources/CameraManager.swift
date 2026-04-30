@@ -1,5 +1,5 @@
 import AVFoundation
-import CoreImage
+import Photos
 import SwiftUI
 import UIKit
 
@@ -19,23 +19,17 @@ class CameraManager: NSObject, ObservableObject {
 
     let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
+    let movieFileOutput = AVCaptureMovieFileOutput()
     private let sessionQueue = DispatchQueue(label: "com.maimai.camera", qos: .userInteractive)
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     @Published var isRunning = false
     @Published var awbLocked = false
     @Published var cameraAuthorized = false
     @Published var activeLens: LensType = .main
     @Published var isRecording = false
-    @Published var recordedFileURL: URL?
 
     private var currentDevice: AVCaptureDevice?
     private var currentInput: AVCaptureDeviceInput?
-    private var assetWriter: AVAssetWriter?
-    private var assetWriterInput: AVAssetWriterInput?
-    private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
-    private var recordingStartTime: CMTime?
-    private var frameCount: Int64 = 0
     private var recordingActive = false
 
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
@@ -118,7 +112,7 @@ class CameraManager: NSObject, ObservableObject {
 
         configureFormat(for: device)
 
-        if session.outputs.isEmpty {
+        if !session.outputs.contains(where: { $0 is AVCaptureVideoDataOutput }) {
             videoOutput.videoSettings = [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             ]
@@ -137,6 +131,20 @@ class CameraManager: NSObject, ObservableObject {
             }
 
             videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
+        }
+
+        if !session.outputs.contains(where: { $0 is AVCaptureMovieFileOutput }) {
+            guard session.canAddOutput(movieFileOutput) else {
+                print("CameraManager: Cannot add movie file output")
+                return
+            }
+            session.addOutput(movieFileOutput)
+
+            for connection in movieFileOutput.connections {
+                if connection.isVideoStabilizationSupported {
+                    connection.preferredVideoStabilizationMode = .off
+                }
+            }
         }
 
         configureExposure(for: device)
@@ -246,95 +254,23 @@ class CameraManager: NSObject, ObservableObject {
         guard !recordingActive else { return }
 
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let filename = "calib_\(Int(Date().timeIntervalSince1970)).mp4"
+        let filename = "calib_\(Int(Date().timeIntervalSince1970)).mov"
         let fileURL = docs.appendingPathComponent(filename)
 
-        do {
-            let writer = try AVAssetWriter(outputURL: fileURL, fileType: .mp4)
+        recordingActive = true
+        DispatchQueue.main.async { self.isRecording = true }
 
-            let settings: [String: Any] = [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: 1080,
-                AVVideoHeightKey: 1440
-            ]
-            let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
-            input.expectsMediaDataInRealTime = true
-
-            let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-                assetWriterInput: input,
-                sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                    kCVPixelBufferWidthKey as String: 1080,
-                    kCVPixelBufferHeightKey as String: 1440
-                ]
-            )
-
-            guard writer.canAdd(input) else {
-                print("CameraManager: Cannot add writer input")
-                return
-            }
-            writer.add(input)
-
-            sessionQueue.async { [weak self] in
-                guard let self else { return }
-                self.assetWriter = writer
-                self.assetWriterInput = input
-                self.pixelBufferAdaptor = adaptor
-                self.recordingStartTime = nil
-                self.frameCount = 0
-                self.recordingActive = true
-                DispatchQueue.main.async {
-                    self.isRecording = true
-                    self.recordedFileURL = nil
-                }
-            }
-            print("CameraManager: Recording to \(fileURL.lastPathComponent)")
-        } catch {
-            print("CameraManager: AssetWriter init failed: \(error)")
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.movieFileOutput.startRecording(to: fileURL, recordingDelegate: self)
         }
+        print("CameraManager: Recording to \(fileURL.lastPathComponent)")
     }
 
     func stopRecording() {
         guard recordingActive else { return }
-
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-
-            self.recordingActive = false
-            self.pixelBufferAdaptor = nil
-
-            let writer = self.assetWriter
-            let status = writer?.status ?? .unknown
-
-            if status == .writing {
-                self.assetWriterInput?.markAsFinished()
-                writer?.finishWriting { [weak self] in
-                    guard let self else { return }
-                    let url = writer?.outputURL
-                    DispatchQueue.main.async {
-                        self.isRecording = false
-                        self.recordedFileURL = url
-                    }
-                    print("CameraManager: Recording saved to \(url?.lastPathComponent ?? "unknown"), \(self.frameCount) frames")
-                    self.assetWriter = nil
-                    self.assetWriterInput = nil
-                    self.recordingStartTime = nil
-                }
-            } else {
-                if status == .failed {
-                    print("CameraManager: Writer failed: \(writer?.error?.localizedDescription ?? "unknown")")
-                }
-                if status == .unknown {
-                    print("CameraManager: Writer never started, discarding")
-                }
-                self.assetWriter = nil
-                self.assetWriterInput = nil
-                self.recordingStartTime = nil
-                DispatchQueue.main.async {
-                    self.isRecording = false
-                }
-            }
-        }
+        recordingActive = false
+        movieFileOutput.stopRecording()
     }
 }
 
@@ -347,68 +283,40 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     ) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let scaled = scaleTo1080x1440(pixelBuffer)
-
-        if recordingActive, let input = assetWriterInput, input.isReadyForMoreMediaData {
-            if assetWriter?.status == .unknown {
-                recordingStartTime = timestamp
-                assetWriter?.startWriting()
-                assetWriter?.startSession(atSourceTime: timestamp)
-            }
-
-            if let adaptor = pixelBufferAdaptor, assetWriter?.status == .writing {
-                adaptor.append(scaled, withPresentationTime: timestamp)
-                frameCount += 1
-            }
-        }
-
-        onFrame?(scaled, timestamp)
+        onFrame?(pixelBuffer, timestamp)
     }
+}
 
-    private func scaleTo1080x1440(_ source: CVPixelBuffer) -> CVPixelBuffer {
-        let srcW = CVPixelBufferGetWidth(source)
-        let srcH = CVPixelBufferGetHeight(source)
+extension CameraManager: AVCaptureFileOutputRecordingDelegate {
 
-        if srcW == 1080 && srcH == 1440 { return source }
+    func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection],
+        error: Error?
+    ) {
+        DispatchQueue.main.async { self.isRecording = false }
 
-        let ciImage = CIImage(cvPixelBuffer: source)
-        let portrait: CIImage
-        if srcW > srcH {
-            portrait = ciImage.oriented(.right)
-        } else {
-            portrait = ciImage
+        if let error {
+            print("CameraManager: Recording failed: \(error.localizedDescription)")
+            return
         }
 
-        let pw = portrait.extent.width
-        let ph = portrait.extent.height
-
-        var destBuffer: CVPixelBuffer?
-        let attrs: [String: Any] = [
-            kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
-        ]
-        CVPixelBufferCreate(
-            kCFAllocatorDefault,
-            1080, 1440,
-            kCVPixelFormatType_32BGRA,
-            attrs as CFDictionary,
-            &destBuffer
-        )
-        guard let dest = destBuffer else { return source }
-
-        let scaleX = 1080.0 / pw
-        let scaleY = 1440.0 / ph
-        let scale = min(scaleX, scaleY)
-        let scaled = portrait.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-
-        let colorSpace = portrait.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-        ciContext.render(
-            scaled,
-            to: dest,
-            bounds: CGRect(x: 0, y: 0, width: 1080, height: 1440),
-            colorSpace: colorSpace
-        )
-
-        return dest
+        PHPhotoLibrary.requestAuthorization { status in
+            guard status == .authorized else {
+                print("CameraManager: Photo library access denied")
+                return
+            }
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: outputFileURL)
+            }) { success, error in
+                if success {
+                    print("CameraManager: Saved to photo library: \(outputFileURL.lastPathComponent)")
+                } else {
+                    print("CameraManager: Save failed: \(error?.localizedDescription ?? "unknown")")
+                }
+            }
+        }
     }
 }
 
