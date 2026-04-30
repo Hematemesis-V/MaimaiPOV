@@ -302,7 +302,7 @@ extension CameraManager: AVCaptureFileOutputRecordingDelegate {
             return
         }
 
-        PHPhotoLibrary.requestAuthorization { status in
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized else {
                 print("CameraManager: Photo library access denied")
                 return
