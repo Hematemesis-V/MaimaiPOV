@@ -4,6 +4,7 @@ struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @State private var focusValue: Double = 0.5
     @State private var syncOffset: Double = -25.0
+    @State private var selectedLens: CameraManager.LensType = .main
 
     var body: some View {
         VStack(spacing: 20) {
@@ -26,14 +27,14 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
-            Picker("Lens", selection: $cameraManager.activeLens) {
+            Picker("Lens", selection: $selectedLens) {
                 ForEach(CameraManager.LensType.allCases, id: \.self) { lens in
                     Text(lens.rawValue).tag(lens)
                 }
             }
             .pickerStyle(SegmentedPickerStyle())
             .padding(.horizontal)
-            .onChange(of: cameraManager.activeLens) { newLens in
+            .onChange(of: selectedLens) { newLens in
                 cameraManager.switchLens(to: newLens)
             }
 
