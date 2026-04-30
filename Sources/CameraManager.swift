@@ -263,7 +263,7 @@ class CameraManager: NSObject, ObservableObject {
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: input,
                 sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
                     kCVPixelBufferWidthKey as String: 1080,
                     kCVPixelBufferHeightKey as String: 1440
                 ]
@@ -389,7 +389,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         CVPixelBufferCreate(
             kCFAllocatorDefault,
             1080, 1440,
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelFormatType_32BGRA,
             attrs as CFDictionary,
             &destBuffer
         )
