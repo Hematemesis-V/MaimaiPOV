@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var syncOffset: Double = -25.0
     @State private var readoutTimeMs: Double = 9.18
     @State private var selectedLens: CameraManager.LensType = .main
+    @State private var frameCounter = 0
 
     var body: some View {
         VStack(spacing: 20) {
@@ -105,6 +106,9 @@ struct ContentView: View {
             MotionManager.shared.startUpdates()
 
             cameraManager.onFrame = { pixelBuffer, timestamp in
+                frameCounter += 1
+                if frameCounter % 3 != 0 { return }
+
                 let frameTime = CMTimeGetSeconds(timestamp)
                 let centerTime = frameTime + (syncOffset / 1000.0)
                 let topTime = centerTime - (readoutTimeMs / 2000.0)
