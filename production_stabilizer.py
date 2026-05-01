@@ -419,9 +419,10 @@ def _qmul(a, b):
     ]
 
 _DEV_TO_CAM = [0.0, 1.0, 0.0, 0.0]
+_DEV_TO_CAM_INV = [0.0, -1.0, 0.0, 0.0]
 
 def align_imu(q):
-    q_cam = _qmul(_DEV_TO_CAM, q)
+    q_cam = _qmul(_qmul(_DEV_TO_CAM, q), _DEV_TO_CAM_INV)
     norm = math.sqrt(sum(c * c for c in q_cam))
     return [c / norm for c in q_cam]
 
