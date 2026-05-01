@@ -95,18 +95,18 @@ class NetworkManager {
         var header = Data(capacity: 64)
         if let syncData = "SYNC".data(using: .ascii) { header.append(syncData) }
         withUnsafeBytes(of: frameTimestamp) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: topQuat.vector.w) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: topQuat.vector.x) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: topQuat.vector.y) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: topQuat.vector.z) { header.append(contentsOf: $0) }
-        withUnsafeBytes(of: topQuat.vector.w) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: centerQuat.vector.w) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: centerQuat.vector.x) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: centerQuat.vector.y) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: centerQuat.vector.z) { header.append(contentsOf: $0) }
-        withUnsafeBytes(of: centerQuat.vector.w) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: bottomQuat.vector.w) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: bottomQuat.vector.x) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: bottomQuat.vector.y) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: bottomQuat.vector.z) { header.append(contentsOf: $0) }
-        withUnsafeBytes(of: bottomQuat.vector.w) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: payloadSize) { header.append(contentsOf: $0) }
 
         let yData = Data(bytesNoCopy: yPtr, count: ySize, deallocator: .none)

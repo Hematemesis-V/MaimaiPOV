@@ -41,7 +41,7 @@ class MotionManager {
             return
         }
         motionManager.deviceMotionUpdateInterval = 1.0 / 200.0
-        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: OperationQueue()) { [weak self] motion, error in
+        motionManager.startDeviceMotionUpdates(using: .xMagneticNorthZVertical, to: OperationQueue()) { [weak self] motion, error in
             guard let self, let motion else { return }
             if let error {
                 print("MotionManager: Error: \(error.localizedDescription)")
