@@ -36,6 +36,22 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear { setupCamera() }
+        .onChange(of: cameraManager.isRunning) { isRunning in
+            if isRunning {
+                let actualMin = Double(cameraManager.getMinISO())
+                let actualMax = Double(cameraManager.getMaxISO())
+                
+                // 加上安全判断，确保区间合法，彻底杜绝 Slider 崩溃
+                if actualMin > 0 && actualMax > actualMin {
+                    minISO = actualMin
+                    maxISO = actualMax
+                    // 如果当前的 isoValue 不在合法范围内，重置为最小值
+                    if isoValue < actualMin || isoValue > actualMax {
+                        isoValue = actualMin
+                    }
+                }
+            }
+        }
         .onChange(of: focusValue) { newValue in
             cameraManager.setFocus(Float(newValue))
         }
@@ -213,9 +229,6 @@ struct ContentView: View {
         cameraManager.setFocus(Float(focusValue))
         MotionManager.shared.startUpdates()
 
-        minISO = Double(cameraManager.getMinISO())
-        maxISO = Double(cameraManager.getMaxISO())
-        isoValue = minISO
 
         cameraManager.onFrame = { pixelBuffer, timestamp in
             frameCounter += 1
