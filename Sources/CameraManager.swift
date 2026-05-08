@@ -27,10 +27,13 @@ class CameraManager: NSObject, ObservableObject {
     @Published var cameraAuthorized = false
     @Published var activeLens: LensType = .main
     @Published var isRecording = false
+    @Published var exposureMode: AVCaptureDevice.ExposureMode = .custom
 
     private var currentDevice: AVCaptureDevice?
     private var currentInput: AVCaptureDeviceInput?
     private var recordingActive = false
+    private var currentDuration: CMTime = CMTime(value: 1, timescale: 240)
+    private var currentISO: Float = 0.0
 
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
 
@@ -205,13 +208,76 @@ class CameraManager: NSObject, ObservableObject {
         }
         do {
             try device.lockForConfiguration()
-            let duration = CMTime(value: 1, timescale: 240)
-            device.setExposureModeCustom(duration: duration, iso: AVCaptureDevice.currentISO, completionHandler: nil)
+            currentISO = Float(device.activeFormat.minISO)
+            let duration = currentDuration
+            device.setExposureModeCustom(duration: duration, iso: currentISO, completionHandler: nil)
             device.unlockForConfiguration()
-            print("CameraManager: Exposure locked 1/240s, ISO=\(AVCaptureDevice.currentISO)")
+            DispatchQueue.main.async { self.exposureMode = .custom }
+            print("CameraManager: Exposure locked 1/\(duration.timescale)s, ISO=\(currentISO)")
         } catch {
             print("CameraManager: Exposure config failed: \(error)")
         }
+    }
+
+    func setExposure(duration: CMTime, iso: Float) {
+        guard let device = currentDevice,
+              device.isExposureModeSupported(.custom) else { return }
+        do {
+            try device.lockForConfiguration()
+            let clampedISO = min(max(iso, Float(device.activeFormat.minISO)), Float(device.activeFormat.maxISO))
+            device.setExposureModeCustom(duration: duration, iso: clampedISO, completionHandler: nil)
+            currentDuration = duration
+            currentISO = clampedISO
+            device.unlockForConfiguration()
+        } catch {
+            print("CameraManager: Exposure set failed: \(error)")
+        }
+    }
+
+    func setAutoExposure() {
+        guard let device = currentDevice,
+              device.isExposureModeSupported(.continuousAutoExposure) else { return }
+        do {
+            try device.lockForConfiguration()
+            device.exposureMode = .continuousAutoExposure
+            device.unlockForConfiguration()
+            DispatchQueue.main.async { self.exposureMode = .continuousAutoExposure }
+        } catch {
+            print("CameraManager: Auto exposure failed: \(error)")
+        }
+    }
+
+    func setCustomExposure() {
+        guard let device = currentDevice,
+              device.isExposureModeSupported(.custom) else { return }
+        do {
+            try device.lockForConfiguration()
+            device.setExposureModeCustom(duration: currentDuration, iso: currentISO, completionHandler: nil)
+            device.unlockForConfiguration()
+            DispatchQueue.main.async { self.exposureMode = .custom }
+        } catch {
+            print("CameraManager: Custom exposure failed: \(error)")
+        }
+    }
+
+    func getMinISO() -> Float {
+        guard let device = currentDevice else { return 0 }
+        return Float(device.activeFormat.minISO)
+    }
+
+    func getMaxISO() -> Float {
+        guard let device = currentDevice else { return 0 }
+        return Float(device.activeFormat.maxISO)
+    }
+
+    func getActiveMinDuration() -> CMTime {
+        guard let device = currentDevice else { return CMTime(value: 1, timescale: 1) }
+        return device.activeFormat.minExposureDuration
+    }
+
+    func getActiveMaxDuration() -> CMTime {
+        guard let device = currentDevice else { return CMTime(value: 1, timescale: 1) }
+        return device.activeFormat.maxExposureDuration
     }
 
     func setFocus(_ value: Float) {
