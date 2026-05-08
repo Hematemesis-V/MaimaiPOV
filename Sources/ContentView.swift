@@ -8,19 +8,10 @@ struct ContentView: View {
     @State private var readoutTimeMs: Double = 9.18
     @State private var selectedLens: CameraManager.LensType = .main
     @State private var frameCounter = 0
-    @State private var shutterIndex: Double = 10
+    @State private var shutterTimescale: Double = 240.0
     @State private var isoValue: Double = 50.0
     @State private var minISO: Double = 50.0
     @State private var maxISO: Double = 3200.0
-
-    private let shutterOptions: [(label: String, timescale: Int32)] = [
-        ("1/10000", 10000), ("1/8000", 8000), ("1/6000", 6000),
-        ("1/4000", 4000), ("1/3000", 3000), ("1/2000", 2000),
-        ("1/1500", 1500), ("1/1000", 1000), ("1/750", 750),
-        ("1/500", 500), ("1/375", 375), ("1/250", 250),
-        ("1/180", 180), ("1/125", 125), ("1/90", 90),
-        ("1/60", 60),
-    ]
 
     var body: some View {
         VStack(spacing: 12) {
@@ -55,17 +46,15 @@ struct ContentView: View {
         .onChange(of: focusValue) { newValue in
             cameraManager.setFocus(Float(newValue))
         }
-        .onChange(of: shutterIndex) { newIndex in
+        .onChange(of: shutterTimescale) { newValue in
             if cameraManager.exposureMode == .custom {
-                let timescale = shutterOptions[Int(newIndex)].timescale
-                let duration = CMTime(value: 1, timescale: timescale)
+                let duration = CMTime(value: 1, timescale: Int32(newValue))
                 cameraManager.setExposure(duration: duration, iso: Float(isoValue))
             }
         }
         .onChange(of: isoValue) { newValue in
             if cameraManager.exposureMode == .custom {
-                let timescale = shutterOptions[Int(shutterIndex)].timescale
-                let duration = CMTime(value: 1, timescale: timescale)
+                let duration = CMTime(value: 1, timescale: Int32(shutterTimescale))
                 cameraManager.setExposure(duration: duration, iso: Float(newValue))
             }
         }
@@ -148,10 +137,9 @@ struct ContentView: View {
     }
 
     private var shutterSlider: some View {
-        let idx = Int(shutterIndex)
-        return VStack(alignment: .leading) {
+        VStack(alignment: .leading) {
             HStack {
-                Text("Shutter: \(shutterOptions[idx].label)")
+                Text("Shutter: 1/\(Int(shutterTimescale))")
                 Spacer()
                 Button(cameraManager.exposureMode == .custom ? "Auto" : "Manual") {
                     if cameraManager.exposureMode == .custom {
@@ -164,7 +152,7 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(cameraManager.exposureMode == .custom ? .orange : .green)
             }
-            Slider(value: $shutterIndex, in: 0...Double(shutterOptions.count - 1), step: 1)
+            Slider(value: $shutterTimescale, in: 200...300, step: 1)
                 .disabled(cameraManager.exposureMode != .custom)
                 .opacity(cameraManager.exposureMode == .custom ? 1.0 : 0.4)
         }
