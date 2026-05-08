@@ -305,10 +305,10 @@ class ZeroCopyStabilizer:
 
     def _compute_grid_low(self, qt, qc, qb):
         rl = self._q_rot(self._q_inv(qc), self.rays_w_cache)
-        _, ya = self._distort(rl[..., 0], rl[..., 1], rl[..., 2])
-        y_frac = torch.clamp((self.fy * ya + self.cy) / self.h_in, 0.0, 1.0).unsqueeze(-1)
+        xa, _ = self._distort(rl[..., 0], rl[..., 1], rl[..., 2])
+        x_frac = torch.clamp((self.fx * xa + self.cx) / self.w_in, 0.0, 1.0).unsqueeze(-1)
 
-        qp = F.normalize(qt * (1.0 - y_frac) + qb * y_frac, p=2, dim=-1)
+        qp = F.normalize(qt * (1.0 - x_frac) + qb * x_frac, p=2, dim=-1)
 
         rl2 = self._q_rot(self._q_inv(qp), self.rays_w_cache)
         xf, yf = self._distort(rl2[..., 0], rl2[..., 1], rl2[..., 2])

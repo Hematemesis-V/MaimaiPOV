@@ -8,7 +8,7 @@ struct ContentView: View {
     @State private var readoutTimeMs: Double = 9.18
     @State private var selectedLens: CameraManager.LensType = .main
     @State private var frameCounter = 0
-    @State private var shutterIndex: Int = 10
+    @State private var shutterIndex: Double = 10
     @State private var isoValue: Double = 50.0
     @State private var minISO: Double = 50.0
     @State private var maxISO: Double = 3200.0
@@ -48,7 +48,7 @@ struct ContentView: View {
         }
         .onChange(of: isoValue) { newValue in
             if cameraManager.exposureMode == .custom {
-                let timescale = shutterOptions[shutterIndex].timescale
+                let timescale = shutterOptions[Int(shutterIndex)].timescale
                 let duration = CMTime(value: 1, timescale: timescale)
                 cameraManager.setExposure(duration: duration, iso: Float(newValue))
             }
@@ -132,9 +132,10 @@ struct ContentView: View {
     }
 
     private var shutterSlider: some View {
-        VStack(alignment: .leading) {
+        let idx = Int(shutterIndex)
+        return VStack(alignment: .leading) {
             HStack {
-                Text("Shutter: \(shutterOptions[shutterIndex].label)")
+                Text("Shutter: \(shutterOptions[idx].label)")
                 Spacer()
                 Button(cameraManager.exposureMode == .custom ? "Auto" : "Manual") {
                     if cameraManager.exposureMode == .custom {
