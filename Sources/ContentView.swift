@@ -24,154 +24,18 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Text("Maimai POV Stabilizer")
-                .font(.headline)
-                .foregroundColor(.cyan)
-
-            if cameraManager.cameraAuthorized {
-                ZStack(alignment: .topTrailing) {
-                    CameraPreviewView(session: cameraManager.session)
-                        .aspectRatio(3.0 / 4.0, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    if cameraManager.isRecording {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 10, height: 10)
-                            Text("REC")
-                                .font(.caption2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.red)
-                        }
-                        .padding(8)
-                        .background(Color.black.opacity(0.5))
-                        .clipShape(Capsule())
-                        .padding(8)
-                    }
-                }
-            } else {
-                Rectangle()
-                    .fill(Color.black)
-                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
-                    .overlay(
-                        Text("Camera Not Authorized")
-                            .foregroundColor(.gray)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-
-            Picker("Lens", selection: $selectedLens) {
-                ForEach(CameraManager.LensType.allCases, id: \.self) { lens in
-                    Text(lens.rawValue).tag(lens)
-                }
-            }
-            .pickerStyle(SegmentedPickerStyle())
-            .padding(.horizontal)
-            .onChange(of: selectedLens) { newLens in
-                cameraManager.switchLens(to: newLens)
-            }
-
-            VStack(alignment: .leading) {
-                Text("Focus: \(focusValue, specifier: "%.2f")")
-                Slider(value: $focusValue, in: 0.0...1.0)
-            }.padding(.horizontal)
-
-            VStack(alignment: .leading) {
-                HStack {
-                    Text("Shutter: \(shutterOptions[shutterIndex].label)")
-                    Spacer()
-                    Button(cameraManager.exposureMode == .custom ? "Auto" : "Manual") {
-                        if cameraManager.exposureMode == .custom {
-                            cameraManager.setAutoExposure()
-                        } else {
-                            cameraManager.setCustomExposure()
-                        }
-                    }
-                    .font(.caption)
-                    .buttonStyle(.borderedProminent)
-                    .tint(cameraManager.exposureMode == .custom ? .orange : .green)
-                }
-                Slider(value: $shutterIndex, in: 0...Double(shutterOptions.count - 1), step: 1)
-                    .disabled(cameraManager.exposureMode != .custom)
-                    .opacity(cameraManager.exposureMode == .custom ? 1.0 : 0.4)
-            }.padding(.horizontal)
-
-            VStack(alignment: .leading) {
-                Text("ISO: \(Int(isoValue))")
-                Slider(value: $isoValue, in: minISO...maxISO, step: 1)
-                    .disabled(cameraManager.exposureMode != .custom)
-                    .opacity(cameraManager.exposureMode == .custom ? 1.0 : 0.4)
-            }.padding(.horizontal)
-
-            VStack(alignment: .leading) {
-                Text("Sync Offset (ms): \(syncOffset, specifier: "%.1f")")
-                Slider(value: $syncOffset, in: -50.0...50.0)
-            }.padding(.horizontal)
-
-            VStack(alignment: .leading) {
-                Text("Readout Time (ms): \(readoutTimeMs, specifier: "%.2f")")
-                Slider(value: $readoutTimeMs, in: 5.0...15.0)
-            }.padding(.horizontal)
-
-            HStack {
-                Button(cameraManager.awbLocked ? "Unlock AWB" : "Lock AWB") {
-                    if cameraManager.awbLocked {
-                        cameraManager.unlockWhiteBalance()
-                    } else {
-                        cameraManager.lockWhiteBalance()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(cameraManager.awbLocked ? .red : .blue)
-
-                Spacer()
-
-                Button(cameraManager.isRecording ? "Stop Rec" : "Rec") {
-                    if cameraManager.isRecording {
-                        cameraManager.stopRecording()
-                    } else {
-                        cameraManager.startRecording()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(cameraManager.isRecording ? .red : .gray)
-            }
-            .padding(.horizontal)
+            headerView
+            previewSection
+            lensPicker
+            focusSlider
+            shutterSlider
+            isoSlider
+            syncOffsetSlider
+            readoutSlider
+            actionButtons
         }
         .preferredColorScheme(.dark)
-        .onAppear {
-            cameraManager.checkPermissionAndStart()
-            cameraManager.setFocus(Float(focusValue))
-            MotionManager.shared.startUpdates()
-
-            minISO = Double(cameraManager.getMinISO())
-            maxISO = Double(cameraManager.getMaxISO())
-            isoValue = minISO
-
-            cameraManager.onFrame = { pixelBuffer, timestamp in
-                frameCounter += 1
-                if frameCounter % 3 != 0 { return }
-
-                let frameTime = CMTimeGetSeconds(timestamp)
-                let centerTime = frameTime + (syncOffset / 1000.0)
-                let topTime = centerTime - (readoutTimeMs / 2000.0)
-                let bottomTime = centerTime + (readoutTimeMs / 2000.0)
-
-                if let topQuat = MotionManager.shared.getQuaternion(at: topTime),
-                   let centerQuat = MotionManager.shared.getQuaternion(at: centerTime),
-                   let bottomQuat = MotionManager.shared.getQuaternion(at: bottomTime) {
-
-                    NetworkManager.shared.sendFrame(
-                        buffer: pixelBuffer,
-                        frameTimestamp: centerTime,
-                        topQuat: topQuat,
-                        centerQuat: centerQuat,
-                        bottomQuat: bottomQuat
-                    )
-                }
-            }
-        }
+        .onAppear { setupCamera() }
         .onChange(of: focusValue) { newValue in
             cameraManager.setFocus(Float(newValue))
         }
@@ -196,6 +60,183 @@ struct ContentView: View {
             cameraManager.onFrame = nil
             cameraManager.stopRunning()
             MotionManager.shared.stopUpdates()
+        }
+    }
+
+    private var headerView: some View {
+        Text("Maimai POV Stabilizer")
+            .font(.headline)
+            .foregroundColor(.cyan)
+    }
+
+    private var previewSection: some View {
+        Group {
+            if cameraManager.cameraAuthorized {
+                ZStack(alignment: .topTrailing) {
+                    CameraPreviewView(session: cameraManager.session)
+                        .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    if cameraManager.isRecording {
+                        recIndicator
+                    }
+                }
+            } else {
+                Rectangle()
+                    .fill(Color.black)
+                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                    .overlay(
+                        Text("Camera Not Authorized")
+                            .foregroundColor(.gray)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    private var recIndicator: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 10, height: 10)
+            Text("REC")
+                .font(.caption2)
+                .fontWeight(.bold)
+                .foregroundColor(.red)
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.5))
+        .clipShape(Capsule())
+        .padding(8)
+    }
+
+    private var lensPicker: some View {
+        Picker("Lens", selection: $selectedLens) {
+            ForEach(CameraManager.LensType.allCases, id: \.self) { lens in
+                Text(lens.rawValue).tag(lens)
+            }
+        }
+        .pickerStyle(SegmentedPickerStyle())
+        .padding(.horizontal)
+        .onChange(of: selectedLens) { newLens in
+            cameraManager.switchLens(to: newLens)
+        }
+    }
+
+    private var focusSlider: some View {
+        VStack(alignment: .leading) {
+            Text("Focus: \(focusValue, specifier: "%.2f")")
+            Slider(value: $focusValue, in: 0.0...1.0)
+        }
+        .padding(.horizontal)
+    }
+
+    private var shutterSlider: some View {
+        VStack(alignment: .leading) {
+            HStack {
+                Text("Shutter: \(shutterOptions[shutterIndex].label)")
+                Spacer()
+                Button(cameraManager.exposureMode == .custom ? "Auto" : "Manual") {
+                    if cameraManager.exposureMode == .custom {
+                        cameraManager.setAutoExposure()
+                    } else {
+                        cameraManager.setCustomExposure()
+                    }
+                }
+                .font(.caption)
+                .buttonStyle(.borderedProminent)
+                .tint(cameraManager.exposureMode == .custom ? .orange : .green)
+            }
+            Slider(value: $shutterIndex, in: 0...Double(shutterOptions.count - 1), step: 1)
+                .disabled(cameraManager.exposureMode != .custom)
+                .opacity(cameraManager.exposureMode == .custom ? 1.0 : 0.4)
+        }
+        .padding(.horizontal)
+    }
+
+    private var isoSlider: some View {
+        VStack(alignment: .leading) {
+            Text("ISO: \(Int(isoValue))")
+            Slider(value: $isoValue, in: minISO...maxISO, step: 1)
+                .disabled(cameraManager.exposureMode != .custom)
+                .opacity(cameraManager.exposureMode == .custom ? 1.0 : 0.4)
+        }
+        .padding(.horizontal)
+    }
+
+    private var syncOffsetSlider: some View {
+        VStack(alignment: .leading) {
+            Text("Sync Offset (ms): \(syncOffset, specifier: "%.1f")")
+            Slider(value: $syncOffset, in: -50.0...50.0)
+        }
+        .padding(.horizontal)
+    }
+
+    private var readoutSlider: some View {
+        VStack(alignment: .leading) {
+            Text("Readout Time (ms): \(readoutTimeMs, specifier: "%.2f")")
+            Slider(value: $readoutTimeMs, in: 5.0...15.0)
+        }
+        .padding(.horizontal)
+    }
+
+    private var actionButtons: some View {
+        HStack {
+            Button(cameraManager.awbLocked ? "Unlock AWB" : "Lock AWB") {
+                if cameraManager.awbLocked {
+                    cameraManager.unlockWhiteBalance()
+                } else {
+                    cameraManager.lockWhiteBalance()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(cameraManager.awbLocked ? .red : .blue)
+
+            Spacer()
+
+            Button(cameraManager.isRecording ? "Stop Rec" : "Rec") {
+                if cameraManager.isRecording {
+                    cameraManager.stopRecording()
+                } else {
+                    cameraManager.startRecording()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(cameraManager.isRecording ? .red : .gray)
+        }
+        .padding(.horizontal)
+    }
+
+    private func setupCamera() {
+        cameraManager.checkPermissionAndStart()
+        cameraManager.setFocus(Float(focusValue))
+        MotionManager.shared.startUpdates()
+
+        minISO = Double(cameraManager.getMinISO())
+        maxISO = Double(cameraManager.getMaxISO())
+        isoValue = minISO
+
+        cameraManager.onFrame = { pixelBuffer, timestamp in
+            frameCounter += 1
+            if frameCounter % 3 != 0 { return }
+
+            let frameTime = CMTimeGetSeconds(timestamp)
+            let centerTime = frameTime + (syncOffset / 1000.0)
+            let topTime = centerTime - (readoutTimeMs / 2000.0)
+            let bottomTime = centerTime + (readoutTimeMs / 2000.0)
+
+            if let topQuat = MotionManager.shared.getQuaternion(at: topTime),
+               let centerQuat = MotionManager.shared.getQuaternion(at: centerTime),
+               let bottomQuat = MotionManager.shared.getQuaternion(at: bottomTime) {
+
+                NetworkManager.shared.sendFrame(
+                    buffer: pixelBuffer,
+                    frameTimestamp: centerTime,
+                    topQuat: topQuat,
+                    centerQuat: centerQuat,
+                    bottomQuat: bottomQuat
+                )
+            }
         }
     }
 }
