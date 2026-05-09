@@ -543,6 +543,9 @@ def init_trackbars(window_name, default_fov):
 def main():
     global exit_flag, network_thread
 
+    output_w = CFG["resolution"]["output_w"]
+    output_h = CFG["resolution"]["output_h"]
+
     stab = ZeroCopyStabilizer(_NV12_H, _NV12_W, _STAB_H, _STAB_W, grid_ds=CFG["stabilizer"]["grid_ds"])
     
     active_lens_key = "main"
@@ -558,7 +561,7 @@ def main():
     CONTROL_WINDOW = "Live Control Panel"
     
     cv2.namedWindow(VIDEO_WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(VIDEO_WINDOW, _OUT_SIZE, _OUT_SIZE)
+    cv2.resizeWindow(VIDEO_WINDOW, output_w, output_h)
     cv2.namedWindow(CONTROL_WINDOW, cv2.WINDOW_AUTOSIZE)
     init_trackbars(CONTROL_WINDOW, CFG["cameras"][active_lens_key]["default_fov"])
 
@@ -664,6 +667,20 @@ def main():
 
         n_fps = shared_controls["n_fps"]
 
+        if stab_on:
+            if track_on:
+                cx, cy, crop_h = shared_crop.get_ideal_params()
+            else:
+                cx, cy = _STAB_W / 2.0, _STAB_H / 2.0
+                crop_h = _STAB_H
+                if crop_h * r > _STAB_W:
+                    crop_h = _STAB_W / r
+            crop_w = crop_h * r
+        else:
+            cx, cy = _STAB_W / 2.0, _STAB_H / 2.0
+            crop_h = _STAB_H
+            crop_w = crop_h * r
+
         control_panel = np.zeros((320, 500, 3), dtype=np.uint8)
         lens_name = CFG["cameras"][active_lens_key]["name"]
         
@@ -678,7 +695,7 @@ def main():
         cv2.putText(control_panel, f"Stab: {'ON' if stab_on else 'OFF'}  Track: {'ON' if track_on else 'OFF'}", (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255) if stab_on else (100, 100, 100), 2)
         cv2.putText(control_panel, f"Y:{yaw} P:{pitch} R:{roll}", (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
         cv2.putText(control_panel, f"FOV:{fov} Dist:{dist_ratio:.2f}", (20, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-        cv2.putText(control_panel, f"Crop: ({cx:.0f},{cy:.0f}) size={crop_size:.0f}", (20, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        cv2.putText(control_panel, f"Crop: ({cx:.0f},{cy:.0f}) WxH: {crop_w:.0f}x{crop_h:.0f}", (20, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         
         cv2.imshow(CONTROL_WINDOW, control_panel)
         cv2.imshow(VIDEO_WINDOW, preview)
