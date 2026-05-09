@@ -15,6 +15,7 @@ targets:
         NSLocalNetworkUsageDescription: "需要通过 USB usbmuxd 映射向 PC 发送极低延迟视频流。"
         NSPhotoLibraryAddUsageDescription: "需要将镜头标定视频保存到系统相册。"
         NSPhotoLibraryUsageDescription: "需要访问相册以保存镜头标定视频。"
+        NSMicrophoneUsageDescription: "需要获取麦克风权限以进行音频传输。"
     settings:
       CODE_SIGN_IDENTITY: ""
       CODE_SIGNING_REQUIRED: "NO"

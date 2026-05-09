@@ -18,5 +18,7 @@
     <string>需要获取片门全开的超广角画面以进行 PC 端防抖运算。</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>需要通过 USB usbmuxd 映射向 PC 发送极低延迟视频流。</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>需要获取麦克风权限以进行音频传输。</string>
 </dict>
 </plist>

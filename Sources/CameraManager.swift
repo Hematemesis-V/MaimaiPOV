@@ -65,37 +65,34 @@ class CameraManager: NSObject, ObservableObject {
     }
 
     func checkPermissionAndStart() {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            DispatchQueue.main.async { self.cameraAuthorized = true }
-            sessionQueue.async { [weak self] in
-                guard let self else { return }
-                self.configureSession(for: self.activeLens)
-                self.session.startRunning()
-                DispatchQueue.main.async { self.isRunning = self.session.isRunning }
-            }
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
-                if granted {
-                    print("CameraManager: Audio permission granted")
-                } else {
-                    print("CameraManager: Audio permission denied")
-                }
-            }
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                guard let self else { return }
-                DispatchQueue.main.async { self.cameraAuthorized = granted }
-                if granted {
-                    AVCaptureDevice.requestAccess(for: .audio) { _ in }
-                    self.sessionQueue.async {
-                        self.configureSession(for: self.activeLens)
-                        self.session.startRunning()
-                        DispatchQueue.main.async { self.isRunning = self.session.isRunning }
+        let videoStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        let audioStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+
+        if videoStatus == .authorized && audioStatus == .authorized {
+            self.setupAndStart()
+        } else {
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] videoGranted in
+                AVCaptureDevice.requestAccess(for: .audio) { audioGranted in
+                    DispatchQueue.main.async {
+                        self?.cameraAuthorized = videoGranted
+                    }
+                    if videoGranted && audioGranted {
+                        self?.setupAndStart()
+                    } else {
+                        print("CameraManager: Video or Audio permission denied")
                     }
                 }
             }
-        default:
-            DispatchQueue.main.async { self.cameraAuthorized = false }
+        }
+    }
+
+    private func setupAndStart() {
+        DispatchQueue.main.async { self.cameraAuthorized = true }
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.configureSession(for: self.activeLens)
+            self.session.startRunning()
+            DispatchQueue.main.async { self.isRunning = self.session.isRunning }
         }
     }
 
