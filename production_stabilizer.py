@@ -12,6 +12,7 @@ from ultralytics import YOLO
 
 # ================================================================
 # ⚙️ 全局参数化配置 (Production Config - Dual Lens System)
+# tidevice relay 8080 8080
 # ================================================================
 CFG = {
     # 📡 网络与传输层
@@ -65,7 +66,7 @@ CFG = {
     
     # 🎯 运镜与平滑系统
     "tracking": {
-        "alpha": 0.2,              
+        "alpha": 0.8,              
         "max_edge_speed": 15.0,     
         "inner_screen_ratio": 0.5,  
         "recenter_decay": 0.02,     
@@ -166,7 +167,7 @@ def recv_exact(sock, n):
     return buf
 
 @torch.inference_mode()
-def nv12_to_rgb_cuda(nv12_raw):
+def nv12_to_rgb_cuda(nv12_raw, gain=1.0):
     raw_cpu = torch.frombuffer(nv12_raw, dtype=torch.uint8)
     _NV12_CUDA_BUFFER.copy_(raw_cpu, non_blocking=True)
     
@@ -182,7 +183,7 @@ def nv12_to_rgb_cuda(nv12_raw):
     v = F.interpolate(uv[:, 1::2].float().unsqueeze(0).unsqueeze(0), size=(RAW_H, RAW_W), mode="bilinear", align_corners=False).squeeze()
     
     yuv = torch.stack([y, u - 128.0, v - 128.0], dim=-1)
-    rgb = torch.matmul(yuv, _Y2R).clamp(0, 255) / 255.0
+    rgb = (torch.matmul(yuv, _Y2R) * gain).clamp(0, 255) / 255.0
     
     # 🔄 GPU 零延迟旋转：将横向画面 (1440, 1920) 顺时针旋转 90 度，变回我们需要的标准竖屏
     # 如果你发现画面竖起来之后是“头朝下”的，把这里的 k=-1 改成 k=1 即可。
@@ -431,6 +432,7 @@ def nothing(x): pass
 def init_trackbars(window_name, default_fov):
     cv2.createTrackbar('Stab', window_name, 1, 1, nothing)
     cv2.createTrackbar('Track', window_name, 1, 1, nothing)
+    cv2.createTrackbar('Gain', window_name, 10, 50, nothing)
     cv2.createTrackbar('Yaw', window_name, 90, 180, nothing)     
     cv2.createTrackbar('Pitch', window_name, 90, 180, nothing)   
     cv2.createTrackbar('Roll', window_name, 90, 180, nothing)    
@@ -498,7 +500,12 @@ def main():
                     n_cnt = 0; n_t = now
 
                 raw_w, raw_x, raw_y, raw_z = fields[6:10]
-                print(f"\U0001f9ed IMU [W,X,Y,Z] -> W: {raw_w:+.3f} | X: {raw_x:+.3f} | Y: {raw_y:+.3f} | Z: {raw_z:+.3f}")
+
+                # 👈 读取增益值 (除以10，将 10~50 映射为 1.0x ~ 5.0x)
+                gain_val = cv2.getTrackbarPos('Gain', CONTROL_WINDOW) / 10.0
+                
+                # 👈 打印 IMU 数据
+                #print(f"\U0001f9ed IMU [W,X,Y,Z] -> W: {raw_w:+.3f} | X: {raw_x:+.3f} | Y: {raw_y:+.3f} | Z: {raw_z:+.3f}")
 
                 q_top = align_imu(fields[2:6])
                 q_center = align_imu(fields[6:10])
@@ -506,7 +513,8 @@ def main():
                 nv12_size = fields[14]
                 nv12_raw = recv_exact(sock, nv12_size)
 
-                rgb = nv12_to_rgb_cuda(nv12_raw)
+                # 👈 传入增益值
+                rgb = nv12_to_rgb_cuda(nv12_raw, gain=gain_val)
 
                 stab_on = cv2.getTrackbarPos('Stab', CONTROL_WINDOW) == 1
                 track_on = stab_on and cv2.getTrackbarPos('Track', CONTROL_WINDOW) == 1
