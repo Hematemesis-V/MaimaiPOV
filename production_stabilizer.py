@@ -167,27 +167,17 @@ def recv_exact(sock, n):
     return buf
 
 @torch.inference_mode()
-def nv12_to_rgb_cuda(nv12_raw, gain=1.0):
-    raw_cpu = torch.frombuffer(nv12_raw, dtype=torch.uint8)
-    _NV12_CUDA_BUFFER.copy_(raw_cpu, non_blocking=True)
+def jpeg_to_rgb_cuda(jpeg_raw, gain=1.0):
+    img_np = cv2.imdecode(np.frombuffer(jpeg_raw, np.uint8), cv2.IMREAD_COLOR)
+    if img_np is None:
+        raise ValueError("JPEG 解码失败，可能是数据包残缺")
     
-    # 🎯 核心修复：顺应 iPhone 传感器的物理横向读取特性 (W=1920, H=1440)
-    RAW_W = max(_NV12_W, _NV12_H)
-    RAW_H = min(_NV12_W, _NV12_H)
+    img_rgb = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
     
-    # 按照 1920x1440 的正确步长切分 Y 轴和 UV 轴，条纹瞬间消失！
-    y = _NV12_CUDA_BUFFER[: RAW_H * RAW_W].reshape(RAW_H, RAW_W).float()
-    uv = _NV12_CUDA_BUFFER[RAW_H * RAW_W :].reshape(RAW_H // 2, RAW_W)
+    img_tensor = torch.from_numpy(img_rgb).cuda().float() / 255.0
+    img_tensor = (img_tensor * gain).clamp(0, 1.0)
     
-    u = F.interpolate(uv[:, 0::2].float().unsqueeze(0).unsqueeze(0), size=(RAW_H, RAW_W), mode="bilinear", align_corners=False).squeeze()
-    v = F.interpolate(uv[:, 1::2].float().unsqueeze(0).unsqueeze(0), size=(RAW_H, RAW_W), mode="bilinear", align_corners=False).squeeze()
-    
-    yuv = torch.stack([y, u - 128.0, v - 128.0], dim=-1)
-    rgb = (torch.matmul(yuv, _Y2R) * gain).clamp(0, 255) / 255.0
-    
-    # 🔄 GPU 零延迟旋转：将横向画面 (1440, 1920) 顺时针旋转 90 度，变回我们需要的标准竖屏
-    # 如果你发现画面竖起来之后是“头朝下”的，把这里的 k=-1 改成 k=1 即可。
-    rgb_portrait = torch.rot90(rgb, k=-1, dims=(0, 1))
+    rgb_portrait = torch.rot90(img_tensor, k=-1, dims=(0, 1))
     
     return rgb_portrait.permute(2, 0, 1).unsqueeze(0)
 
@@ -514,7 +504,7 @@ def main():
                 nv12_raw = recv_exact(sock, nv12_size)
 
                 # 👈 传入增益值
-                rgb = nv12_to_rgb_cuda(nv12_raw, gain=gain_val)
+                rgb = jpeg_to_rgb_cuda(nv12_raw, gain=gain_val)
 
                 stab_on = cv2.getTrackbarPos('Stab', CONTROL_WINDOW) == 1
                 track_on = stab_on and cv2.getTrackbarPos('Track', CONTROL_WINDOW) == 1

@@ -2,6 +2,7 @@ import simd
 import Foundation
 import Network
 import VideoToolbox
+import CoreImage
 
 class NetworkManager {
 
@@ -10,6 +11,9 @@ class NetworkManager {
     private var listener: NWListener?
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "com.maimai.network", qos: .userInteractive)
+    
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private let colorSpace = CGColorSpaceCreateDeviceRGB()
 
     private init() {
         do {
@@ -73,24 +77,12 @@ class NetworkManager {
     ) {
         guard let conn = connection else { return }
 
-        CVPixelBufferLockBaseAddress(buffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let ciImage = CIImage(cvPixelBuffer: buffer)
+        guard let jpegData = ciContext.jpegRepresentation(of: ciImage, colorSpace: colorSpace, options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.95]) else {
+            return
+        }
 
-        guard CVPixelBufferGetPlaneCount(buffer) >= 2 else { return }
-
-        let yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0)
-        let yStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
-        let yHeight = CVPixelBufferGetHeightOfPlane(buffer, 0)
-        let ySize = yStride * yHeight
-
-        let uvBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1)
-        let uvStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
-        let uvHeight = CVPixelBufferGetHeightOfPlane(buffer, 1)
-        let uvSize = uvStride * uvHeight
-
-        guard let yPtr = yBase, let uvPtr = uvBase, ySize > 0, uvSize > 0 else { return }
-
-        let payloadSize = UInt32(ySize + uvSize)
+        let payloadSize = UInt32(jpegData.count)
 
         var header = Data(capacity: 64)
         if let syncData = "SYNC".data(using: .ascii) { header.append(syncData) }
@@ -109,12 +101,8 @@ class NetworkManager {
         withUnsafeBytes(of: bottomQuat.vector.z) { header.append(contentsOf: $0) }
         withUnsafeBytes(of: payloadSize) { header.append(contentsOf: $0) }
 
-        let yData = Data(bytesNoCopy: yPtr, count: ySize, deallocator: .none)
-        let uvData = Data(bytesNoCopy: uvPtr, count: uvSize, deallocator: .none)
-
-        let fullPayload = header + yData + uvData
-
-        conn.send(content: fullPayload, completion: .contentProcessed { error in
+        conn.send(content: header, isComplete: false, completion: .contentProcessed { _ in })
+        conn.send(content: jpegData, isComplete: false, completion: .contentProcessed { error in
             if let error {
                 print("NetworkManager: Send failed: \(error)")
             }
