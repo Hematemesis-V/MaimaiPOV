@@ -6,6 +6,7 @@ import socket
 import threading
 import queue
 import numpy as np
+import sounddevice as sd
 import torch
 import torch.nn.functional as F
 from ultralytics import YOLO
@@ -90,6 +91,9 @@ PACK_HEADER = struct.Struct("<4sd4f4f4fI")
 HEADER_SIZE = PACK_HEADER.size
 EXPECTED_NV12 = _NV12_W * _NV12_H * 3 // 2
 
+AUDIO_HEADER = struct.Struct("<dI")
+AUDIO_HEADER_SIZE = AUDIO_HEADER.size
+
 # ================================================================
 # 🧠 CUDA 常驻显存池
 # ================================================================
@@ -102,6 +106,7 @@ _Q_CONJ = torch.tensor([1.0, -1.0, -1.0, -1.0], dtype=torch.float32, device="cud
 # ================================================================
 frame_queue = queue.Queue(maxsize=1)
 network_queue = queue.Queue(maxsize=3)
+audio_queue = queue.Queue(maxsize=50)
 
 shared_controls = {
     "gain": 1.0,
@@ -456,43 +461,66 @@ def network_receiver_thread():
 
         try:
             while not exit_flag:
-                hdr = recv_exact(sock, HEADER_SIZE)
-                bytes_recv += HEADER_SIZE
-                
-                fields = PACK_HEADER.unpack(hdr)
-                if fields[0] != b"SYNC": continue
+                magic = recv_exact(sock, 4)
+                bytes_recv += 4
 
-                nv12_size = fields[14]
-                nv12_raw = recv_exact(sock, nv12_size)
-                bytes_recv += nv12_size
+                if magic == b"SYNC":
+                    hdr_rest = recv_exact(sock, HEADER_SIZE - 4)
+                    bytes_recv += HEADER_SIZE - 4
 
-                now = time.perf_counter()
-                if now - bw_t >= 1.0:
-                    mbps = (bytes_recv * 8) / (1024 * 1024)
-                    mb_s = bytes_recv / (1024 * 1024)
-                    
-                    shared_controls["mbps"] = mbps
-                    shared_controls["mb_s"] = mb_s
-                    
-                    bytes_recv = 0
-                    bw_t = now
+                    hdr_full = magic + hdr_rest
+                    fields = PACK_HEADER.unpack(hdr_full)
 
-                gain_val = shared_controls["gain"]
-                rgb = jpeg_to_rgb_cuda(nv12_raw, gain=gain_val)
+                    nv12_size = fields[14]
+                    nv12_raw = recv_exact(sock, nv12_size)
+                    bytes_recv += nv12_size
 
-                if network_queue.full():
-                    try:
-                        network_queue.get_nowait()
-                    except queue.Empty:
-                        pass
+                    now = time.perf_counter()
+                    if now - bw_t >= 1.0:
+                        mbps = (bytes_recv * 8) / (1024 * 1024)
+                        mb_s = bytes_recv / (1024 * 1024)
 
-                network_queue.put((rgb, fields))
+                        shared_controls["mbps"] = mbps
+                        shared_controls["mb_s"] = mb_s
 
-                n_cnt += 1
-                if now - n_t >= 1.0:
-                    shared_controls["n_fps"] = n_cnt / (now - n_t)
-                    n_cnt = 0
-                    n_t = now
+                        bytes_recv = 0
+                        bw_t = now
+
+                    gain_val = shared_controls["gain"]
+                    rgb = jpeg_to_rgb_cuda(nv12_raw, gain=gain_val)
+
+                    if network_queue.full():
+                        try:
+                            network_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+
+                    network_queue.put((rgb, fields))
+
+                    n_cnt += 1
+                    if now - n_t >= 1.0:
+                        shared_controls["n_fps"] = n_cnt / (now - n_t)
+                        n_cnt = 0
+                        n_t = now
+
+                elif magic == b"AUDA":
+                    audio_hdr = recv_exact(sock, AUDIO_HEADER_SIZE)
+                    bytes_recv += AUDIO_HEADER_SIZE
+
+                    timestamp, audio_size = AUDIO_HEADER.unpack(audio_hdr)
+                    audio_raw = recv_exact(sock, audio_size)
+                    bytes_recv += audio_size
+
+                    if audio_queue.full():
+                        try:
+                            audio_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+
+                    audio_queue.put((timestamp, audio_raw))
+
+                else:
+                    continue
 
         except (ConnectionError, OSError) as e:
             print(f"\n[TCP] ⚠️ 连接断开: {e}，{reconnect_delay}s 后重连...")
@@ -507,7 +535,47 @@ def network_receiver_thread():
         time.sleep(reconnect_delay)
 
 # ================================================================
-# 🔧 辅助函数
+# � 音频播放线程
+# ================================================================
+def audio_playback_thread():
+    SAMPLE_RATE = 48000
+    CHANNELS = 1
+
+    try:
+        stream = sd.OutputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="int16",
+            blocksize=1024,
+            latency="low",
+        )
+        stream.start()
+        print("[Audio] ✅ 音频播放流已启动 (48000Hz, 1ch, Int16)")
+    except Exception as e:
+        print(f"[Audio] ❌ 音频流初始化失败: {e}")
+        return
+
+    while not exit_flag:
+        try:
+            timestamp, audio_raw = audio_queue.get(timeout=1.0)
+            audio_np = np.frombuffer(audio_raw, dtype=np.int16)
+            if CHANNELS == 1 and audio_np.ndim == 1:
+                audio_np = audio_np.reshape(-1, 1)
+            stream.write(audio_np)
+        except queue.Empty:
+            continue
+        except Exception as e:
+            print(f"[Audio] 播放错误: {e}")
+            time.sleep(0.01)
+
+    try:
+        stream.stop()
+        stream.close()
+    except Exception:
+        pass
+
+# ================================================================
+# � 辅助函数
 # ================================================================
 def _qmul(a, b):
     return [
@@ -556,6 +624,9 @@ def main():
 
     network_thread = threading.Thread(target=network_receiver_thread, daemon=True)
     network_thread.start()
+
+    audio_thread = threading.Thread(target=audio_playback_thread, daemon=True)
+    audio_thread.start()
 
     VIDEO_WINDOW = "Live Maimai Stream"
     CONTROL_WINDOW = "Live Control Panel"

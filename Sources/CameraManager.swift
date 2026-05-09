@@ -19,6 +19,7 @@ class CameraManager: NSObject, ObservableObject {
 
     let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
+    private let audioOutput = AVCaptureAudioDataOutput()
     let movieFileOutput = AVCaptureMovieFileOutput()
     private let sessionQueue = DispatchQueue(label: "com.maimai.camera", qos: .userInteractive)
 
@@ -151,6 +152,46 @@ class CameraManager: NSObject, ObservableObject {
         }
 
         configureExposure(for: device)
+
+        if !session.outputs.contains(where: { $0 is AVCaptureAudioDataOutput }) {
+            guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
+                print("CameraManager: No audio device")
+                return
+            }
+
+            if let backPort = audioDevice.ports.first(where: { $0.portType == .back }) {
+                if let dataSources = backPort.dataSources,
+                   let backMic = dataSources.first {
+                    do {
+                        try audioDevice.lockForConfiguration()
+                        backPort.setPreferredDataSource(backMic)
+                        if backMic.supportedPolarPatterns.contains(.cardioid) {
+                            backMic.preferredPolarPattern = .cardioid
+                        } else if backMic.supportedPolarPatterns.contains(.stereo) {
+                            backMic.preferredPolarPattern = .stereo
+                        }
+                        audioDevice.unlockForConfiguration()
+                        print("CameraManager: Back microphone selected, polar pattern: \(backMic.preferredPolarPattern?.rawValue ?? "default")")
+                    } catch {
+                        print("CameraManager: Audio datasource config failed: \(error)")
+                    }
+                }
+            }
+
+            guard let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
+                  session.canAddInput(audioInput) else {
+                print("CameraManager: Cannot add audio input")
+                return
+            }
+            session.addInput(audioInput)
+
+            guard session.canAddOutput(audioOutput) else {
+                print("CameraManager: Cannot add audio output")
+                return
+            }
+            session.addOutput(audioOutput)
+            audioOutput.setSampleBufferDelegate(self, queue: sessionQueue)
+        }
     }
 
     func switchLens(to lens: LensType) {
@@ -347,6 +388,21 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        if output is AVCaptureAudioDataOutput {
+            guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+            let length = CMBlockBufferGetDataLength(blockBuffer)
+            var pcmData = Data(count: length)
+            pcmData.withUnsafeMutableBytes { dest in
+                CMBlockBufferCopyDataBytes(blockBuffer, atOffset: 0, dataLength: length, destination: dest.baseAddress!)
+            }
+
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let timestamp = Double(pts.value) / Double(pts.timescale)
+
+            NetworkManager.shared.sendAudio(pcmData: pcmData, timestamp: timestamp)
+            return
+        }
+
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         onFrame?(pixelBuffer, timestamp)

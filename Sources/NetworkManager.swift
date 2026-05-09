@@ -108,4 +108,22 @@ class NetworkManager {
             }
         })
     }
+
+    func sendAudio(pcmData: Data, timestamp: Double) {
+        guard let conn = connection else { return }
+
+        let payloadSize = UInt32(pcmData.count)
+
+        var header = Data(capacity: 16)
+        if let audaData = "AUDA".data(using: .ascii) { header.append(audaData) }
+        withUnsafeBytes(of: timestamp) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: payloadSize) { header.append(contentsOf: $0) }
+
+        conn.send(content: header, isComplete: false, completion: .contentProcessed { _ in })
+        conn.send(content: pcmData, isComplete: false, completion: .contentProcessed { error in
+            if let error {
+                print("NetworkManager: Audio send failed: \(error)")
+            }
+        })
+    }
 }
