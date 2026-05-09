@@ -74,11 +74,19 @@ class CameraManager: NSObject, ObservableObject {
                 self.session.startRunning()
                 DispatchQueue.main.async { self.isRunning = self.session.isRunning }
             }
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                if granted {
+                    print("CameraManager: Audio permission granted")
+                } else {
+                    print("CameraManager: Audio permission denied")
+                }
+            }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard let self else { return }
                 DispatchQueue.main.async { self.cameraAuthorized = granted }
                 if granted {
+                    AVCaptureDevice.requestAccess(for: .audio) { _ in }
                     self.sessionQueue.async {
                         self.configureSession(for: self.activeLens)
                         self.session.startRunning()
@@ -154,31 +162,23 @@ class CameraManager: NSObject, ObservableObject {
         configureExposure(for: device)
 
         if !session.outputs.contains(where: { $0 is AVCaptureAudioDataOutput }) {
-            guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
-                print("CameraManager: No audio device")
-                return
-            }
+            let audioSession = AVAudioSession.sharedInstance()
+            try? audioSession.setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker, .allowBluetooth])
+            try? audioSession.setActive(true)
 
-            if let backPort = audioDevice.ports.first(where: { $0.portType == .back }) {
-                if let dataSources = backPort.dataSources,
-                   let backMic = dataSources.first {
-                    do {
-                        try audioDevice.lockForConfiguration()
-                        backPort.setPreferredDataSource(backMic)
-                        if backMic.supportedPolarPatterns.contains(.cardioid) {
-                            backMic.preferredPolarPattern = .cardioid
-                        } else if backMic.supportedPolarPatterns.contains(.stereo) {
-                            backMic.preferredPolarPattern = .stereo
-                        }
-                        audioDevice.unlockForConfiguration()
-                        print("CameraManager: Back microphone selected, polar pattern: \(backMic.preferredPolarPattern?.rawValue ?? "default")")
-                    } catch {
-                        print("CameraManager: Audio datasource config failed: \(error)")
+            if let inputs = audioSession.availableInputs {
+                let builtInMic = inputs.first(where: { $0.portType == .builtInMic })
+                if let dataSources = builtInMic?.dataSources {
+                    let backMic = dataSources.first(where: { $0.orientation == .back })
+                    try? builtInMic?.setPreferredDataSource(backMic)
+                    if let supportedPatterns = backMic?.supportedPolarPatterns, supportedPatterns.contains(.cardioid) {
+                        try? backMic?.setPreferredPolarPattern(.cardioid)
                     }
                 }
             }
 
-            guard let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
+            guard let audioDevice = AVCaptureDevice.default(for: .audio),
+                  let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
                   session.canAddInput(audioInput) else {
                 print("CameraManager: Cannot add audio input")
                 return
@@ -381,7 +381,7 @@ class CameraManager: NSObject, ObservableObject {
     }
 }
 
-extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
+extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
 
     func captureOutput(
         _ output: AVCaptureOutput,
@@ -392,7 +392,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
             let length = CMBlockBufferGetDataLength(blockBuffer)
             var pcmData = Data(count: length)
-            pcmData.withUnsafeMutableBytes { dest in
+            _ = pcmData.withUnsafeMutableBytes { dest in
                 CMBlockBufferCopyDataBytes(blockBuffer, atOffset: 0, dataLength: length, destination: dest.baseAddress!)
             }
 
