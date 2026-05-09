@@ -220,9 +220,9 @@ struct ContentView: View {
 
         cameraManager.onFrame = { pixelBuffer, timestamp in
 
-            // 性能限制，每3帧发送1帧 关闭
-            //frameCounter += 1
-            //if frameCounter % 3 != 0 { return }
+            // 性能限制，每2帧发送1帧
+            frameCounter += 1
+            if frameCounter % 2 != 0 { return }
 
             let frameTime = CMTimeGetSeconds(timestamp)
             let centerTime = frameTime + (syncOffset / 1000.0)

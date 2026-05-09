@@ -15,7 +15,6 @@ from ultralytics import YOLO
 # tidevice relay 8080 8080
 # ================================================================
 CFG = {
-    # 📡 网络与传输层
     "network": {
         "host": "127.0.0.1",        
         "port": 8080,               
@@ -23,19 +22,18 @@ CFG = {
         "recv_buf_size": 1 << 20,   
     },
     
-    # 📺 核心管线分辨率
     "resolution": {
         "nv12_w": 1440,             
         "nv12_h": 1920,             
         "stab_w": 1080,             
         "stab_h": 1440,             
         "yolo_in_size": 640,        
-        "output_size": 540,         
+        "output_w": 720,            
+        "output_h": 1280,           
     },
     
-    # 📷 双镜头物理内参矩阵 (支持按键热切换)
     "cameras": {
-        "calib_base_width": 1440.0, # 标定时画面的基准宽度 (用于自适应分辨率缩放)
+        "calib_base_width": 1440.0,
         
         "main": {
             "name": "Main (Full Frame)",
@@ -43,20 +41,19 @@ CFG = {
             "cx": 720.0,        "cy": 960.0,
             "k1": 0.09888157,   "k2": -0.06466674,
             "k3": 0.0287103,    "k4": -0.00650599,
-            "default_fov": 100  # 主摄默认的虚拟视野偏窄
+            "default_fov": 100
         },
         
         "uw": {
             "name": "Ultra-Wide (Circular)",
             "fx": 385.42440948, "fy": 387.16735166,
-            "cx": 719.80053711, "cy": 893.22271729, # 完美保留向上偏移的 80 像素！
+            "cx": 719.80053711, "cy": 893.22271729,
             "k1": 0.05338301,   "k2": -0.00722338,
             "k3": -0.00279242,  "k4": -0.00033171,
-            "default_fov": 145  # 超广角默认的虚拟视野更广
+            "default_fov": 145
         }
     },
     
-    # 🤖 AI 目标追踪参数
     "yolo": {
         "model_path": r"D:\maimai\maimai_trae\runs\detect\maimai_bbox_v1\exp_4060ti\weights\best.engine",
         "inner_screen_class": 1,    
@@ -64,7 +61,6 @@ CFG = {
         "padding": 40,              
     },
     
-    # 🎯 运镜与平滑系统
     "tracking": {
         "alpha": 0.8,              
         "max_edge_speed": 15.0,     
@@ -73,7 +69,6 @@ CFG = {
         "recenter_grace_sec": 0.5,  
     },
     
-    # ⚡ GPU 算子极限优化
     "stabilizer": {
         "grid_ds": 10,              
     },
@@ -87,7 +82,9 @@ _NV12_H = CFG["resolution"]["nv12_h"]
 _STAB_W = CFG["resolution"]["stab_w"]
 _STAB_H = CFG["resolution"]["stab_h"]
 _YOLO_IN = CFG["resolution"]["yolo_in_size"]
-_OUT_SIZE = CFG["resolution"]["output_size"]
+_OUT_W = CFG["resolution"]["output_w"]
+_OUT_H = CFG["resolution"]["output_h"]
+_OUT_RATIO = _OUT_W / _OUT_H
 
 PACK_HEADER = struct.Struct("<4sd4f4f4fI")
 HEADER_SIZE = PACK_HEADER.size
@@ -101,48 +98,72 @@ _Y2R = torch.tensor([[1.0, 1.0, 1.0], [0.0, -0.344136, 1.772], [1.402, -0.714136
 _Q_CONJ = torch.tensor([1.0, -1.0, -1.0, -1.0], dtype=torch.float32, device="cuda")
 
 # ================================================================
-# 🧵 异步双轨通讯层 (保持不变)
+# 🧵 全局队列与共享状态
 # ================================================================
 frame_queue = queue.Queue(maxsize=1)
+network_queue = queue.Queue(maxsize=3)
 
+shared_controls = {
+    "gain": 1.0,
+    "n_fps": 0.0,
+}
+
+exit_flag = False
+network_thread = None
+
+# ================================================================
+# 📦 共享裁剪状态
+# ================================================================
 class SharedCropState:
-    def __init__(self):
+    def __init__(self, out_w, out_h):
         self.lock = threading.Lock()
         self.detected = False
         self.last_detect_time = 0.0
         self.cx = _STAB_W / 2.0
         self.cy = _STAB_H / 2.0
-        self.crop_size = float(min(_STAB_W, _STAB_H))
+        self.target_ratio = out_w / out_h
+        max_h = _STAB_H
+        max_w = max_h * self.target_ratio
+        if max_w > _STAB_W:
+            max_h = _STAB_W / self.target_ratio
+        self.crop_h = max_h
         self._update_corners()
 
     def _update_corners(self):
-        half = self.crop_size / 2.0
-        self.x1 = int(max(0, self.cx - half))
-        self.y1 = int(max(0, self.cy - half))
-        self.x2 = int(min(_STAB_W, self.cx + half))
-        self.y2 = int(min(_STAB_H, self.cy + half))
+        crop_w = self.crop_h * self.target_ratio
+        half_w = crop_w / 2.0
+        half_h = self.crop_h / 2.0
+        self.x1 = int(max(0, self.cx - half_w))
+        self.y1 = int(max(0, self.cy - half_h))
+        self.x2 = int(min(_STAB_W, self.cx + half_w))
+        self.y2 = int(min(_STAB_H, self.cy + half_h))
 
-    def set_crop(self, cx, cy, crop_size):
+    def set_crop(self, cx, cy, crop_h):
         with self.lock:
             self.cx = cx
             self.cy = cy
-            self.crop_size = float(crop_size)
+            self.crop_h = float(crop_h)
             self.detected = True
             self.last_detect_time = time.monotonic()
             self._update_corners()
 
     def recenter_step(self):
         with self.lock:
-            if not self.detected: return
+            if not self.detected:
+                return
             elapsed = time.monotonic() - self.last_detect_time
-            if elapsed < CFG["tracking"]["recenter_grace_sec"]: return
+            if elapsed < CFG["tracking"]["recenter_grace_sec"]:
+                return
             decay = CFG["tracking"]["recenter_decay"]
             target_cx = _STAB_W / 2.0
             target_cy = _STAB_H / 2.0
-            target_size = float(min(_STAB_W, _STAB_H))
+            max_h = _STAB_H
+            if max_h * self.target_ratio > _STAB_W:
+                max_h = _STAB_W / self.target_ratio
+            target_h = max_h
             self.cx += (target_cx - self.cx) * decay
             self.cy += (target_cy - self.cy) * decay
-            self.crop_size += (target_size - self.crop_size) * decay
+            self.crop_h += (target_h - self.crop_h) * decay
             self._update_corners()
 
     def get_crop(self):
@@ -151,10 +172,13 @@ class SharedCropState:
 
     def get_ideal_params(self):
         with self.lock:
-            return self.cx, self.cy, self.crop_size
+            return self.cx, self.cy, self.crop_h
 
-shared_crop = SharedCropState()
+shared_crop = SharedCropState(CFG["resolution"]["output_w"], CFG["resolution"]["output_h"])
 
+# ================================================================
+# 🔌 网络接收工具
+# ================================================================
 def recv_exact(sock, n):
     buf = bytearray(n)
     view = memoryview(buf)
@@ -208,14 +232,12 @@ class ZeroCopyStabilizer:
         self.rays_virtual_low = None
         self.rays_w_cache = None
         
-        # 物理镜头参数容器
         self.fx = self.fy = self.cx = self.cy = 0.0
         self.k1 = self.k2 = self.k3 = self.k4 = 0.0
         
         self.state = {"fov": -1, "dist": -1, "yaw": -999, "pitch": -999, "roll": -999, "lens": None}
 
     def load_lens(self, lens_key):
-        """核心：在 GPU 运行时瞬间切换物理镜头内参矩阵"""
         if self.state["lens"] == lens_key: return
         
         cam = CFG["cameras"][lens_key]
@@ -230,7 +252,6 @@ class ZeroCopyStabilizer:
         self.k3 = cam["k3"]
         self.k4 = cam["k4"]
         
-        # 强制清空视角缓存，让 GPU 在下一帧重算网格
         self.state["fov"] = -1
         self.state["lens"] = lens_key
 
@@ -286,7 +307,6 @@ class ZeroCopyStabilizer:
         return torch.stack([b0 + w * t0 + d0, b1 + w * t1 + d1, b2 + w * t2 + d2], dim=-1)
 
     def _distort(self, rx, ry, rz):
-        """GPU 级别物理畸变反解，现在使用动态实例变量"""
         rxy = torch.sqrt(rx**2 + ry**2)
         th = torch.atan2(rxy, rz)
         t2 = th**2; t4 = t2**2; t6 = t4 * t2; t8 = t4**2
@@ -327,7 +347,7 @@ class ZeroCopyStabilizer:
         return F.grid_sample(rgb, grid_high, mode="bilinear", padding_mode="zeros", align_corners=True)
 
 # ================================================================
-# 🤖 YOLO 跟踪线程 (保持不变)
+# 🤖 YOLO 跟踪线程
 # ================================================================
 def yolo_inference_thread():
     model_path = CFG["yolo"]["model_path"]
@@ -390,10 +410,16 @@ def yolo_inference_thread():
                         break
 
             if detected:
-                cx, cy = (smooth_x1 + smooth_x2) / 2.0, (smooth_y1 + smooth_y2) / 2.0
-                w, h = smooth_x2 - smooth_x1, smooth_y2 - smooth_y1
-                crop_size = int(max(w, h) / ratio)
-                shared_crop.set_crop(cx, cy, crop_size)
+                cx = (smooth_x1 + smooth_x2) / 2.0
+                cy = (smooth_y1 + smooth_y2) / 2.0
+                w = smooth_x2 - smooth_x1
+                h = smooth_y2 - smooth_y1
+
+                r = CFG["resolution"]["output_w"] / CFG["resolution"]["output_h"]
+                margin = CFG["tracking"]["inner_screen_ratio"]
+                base_h = max(h, w / r)
+                crop_h = base_h / margin
+                shared_crop.set_crop(cx, cy, crop_h)
             else:
                 shared_crop.recenter_step()
 
@@ -401,6 +427,88 @@ def yolo_inference_thread():
             print(f"\n[YOLO Thread Error] {e}")
             time.sleep(0.1)
 
+# ================================================================
+# 📡 网络接收线程 (生产者)
+# ================================================================
+def network_receiver_thread():
+    global exit_flag
+    host = CFG["network"]["host"]
+    port = CFG["network"]["port"]
+    reconnect_delay = CFG["network"]["reconnect_delay"]
+
+    n_cnt = 0
+    n_t = time.perf_counter()
+    
+    bytes_recv = 0
+    bw_t = time.perf_counter()
+
+    while not exit_flag:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        
+        try:
+            sock.connect((host, port))
+            print(f"[TCP] ✅ 已连接 {host}:{port}")
+        except OSError as e:
+            print(f"[TCP] ❌ 网络错误: {e}，{reconnect_delay}s 后重试...")
+            time.sleep(reconnect_delay)
+            continue
+
+        try:
+            while not exit_flag:
+                hdr = recv_exact(sock, HEADER_SIZE)
+                bytes_recv += HEADER_SIZE
+                
+                fields = PACK_HEADER.unpack(hdr)
+                if fields[0] != b"SYNC": continue
+
+                nv12_size = fields[14]
+                nv12_raw = recv_exact(sock, nv12_size)
+                bytes_recv += nv12_size
+
+                now = time.perf_counter()
+                if now - bw_t >= 1.0:
+                    mbps = (bytes_recv * 8) / (1024 * 1024)
+                    mb_s = bytes_recv / (1024 * 1024)
+                    
+                    shared_controls["mbps"] = mbps
+                    shared_controls["mb_s"] = mb_s
+                    
+                    bytes_recv = 0
+                    bw_t = now
+
+                gain_val = shared_controls["gain"]
+                rgb = jpeg_to_rgb_cuda(nv12_raw, gain=gain_val)
+
+                if network_queue.full():
+                    try:
+                        network_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+
+                network_queue.put((rgb, fields))
+
+                n_cnt += 1
+                if now - n_t >= 1.0:
+                    shared_controls["n_fps"] = n_cnt / (now - n_t)
+                    n_cnt = 0
+                    n_t = now
+
+        except (ConnectionError, OSError) as e:
+            print(f"\n[TCP] ⚠️ 连接断开: {e}，{reconnect_delay}s 后重连...")
+        except Exception as e:
+            print(f"\n[Network Thread Error] {e}")
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+        time.sleep(reconnect_delay)
+
+# ================================================================
+# 🔧 辅助函数
+# ================================================================
 def _qmul(a, b):
     return [
         a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3],
@@ -430,21 +538,21 @@ def init_trackbars(window_name, default_fov):
     cv2.createTrackbar('Distort', window_name, 100, 100, nothing) 
 
 # ================================================================
-# 🎮 主渲染循环 — 动态双镜头管理
+# 🎮 主渲染循环 (消费者)
 # ================================================================
 def main():
-    host = CFG["network"]["host"]
-    port = CFG["network"]["port"]
-    reconnect_delay = CFG["network"]["reconnect_delay"]
+    global exit_flag, network_thread
 
     stab = ZeroCopyStabilizer(_NV12_H, _NV12_W, _STAB_H, _STAB_W, grid_ds=CFG["stabilizer"]["grid_ds"])
     
-    # 默认启动主摄模式
     active_lens_key = "main"
     stab.load_lens(active_lens_key)
 
     yolo_t = threading.Thread(target=yolo_inference_thread, daemon=True)
     yolo_t.start()
+
+    network_thread = threading.Thread(target=network_receiver_thread, daemon=True)
+    network_thread.start()
 
     VIDEO_WINDOW = "Live Maimai Stream"
     CONTROL_WINDOW = "Live Control Panel"
@@ -454,173 +562,139 @@ def main():
     cv2.namedWindow(CONTROL_WINDOW, cv2.WINDOW_AUTOSIZE)
     init_trackbars(CONTROL_WINDOW, CFG["cameras"][active_lens_key]["default_fov"])
 
-    n_cnt = g_cnt = 0
-    n_t = g_t = time.perf_counter()
-    n_fps = g_fps = 0.0
+    g_cnt = 0
+    g_t = time.perf_counter()
+    g_fps = 0.0
 
     while True:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         try:
-            sock.connect((host, port))
-            print(f"[TCP] ✅ 已连接 {host}:{port}")
-        except OSError as e:
-            print(f"[TCP] ❌ 网络错误: {e}，{reconnect_delay}s 后重试...")
-            time.sleep(reconnect_delay)
+            rgb, fields = network_queue.get(timeout=1.0)
+        except queue.Empty:
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                break
             continue
 
-        stab.q_anchor = None
+        yaw = cv2.getTrackbarPos('Yaw', CONTROL_WINDOW) - 90
+        pitch = cv2.getTrackbarPos('Pitch', CONTROL_WINDOW) - 90
+        roll = cv2.getTrackbarPos('Roll', CONTROL_WINDOW) - 90
+        fov = max(10, cv2.getTrackbarPos('FOV', CONTROL_WINDOW))
+        dist_ratio = cv2.getTrackbarPos('Distort', CONTROL_WINDOW) / 100.0
+        
+        gain_val = cv2.getTrackbarPos('Gain', CONTROL_WINDOW) / 10.0
+        shared_controls["gain"] = gain_val
 
-        try:
-            while True:
-                hdr = recv_exact(sock, HEADER_SIZE)
-                fields = PACK_HEADER.unpack(hdr)
-                if fields[0] != b"SYNC": continue
+        q_top = align_imu(fields[2:6])
+        q_center = align_imu(fields[6:10])
+        q_bottom = align_imu(fields[10:14])
 
-                yaw = cv2.getTrackbarPos('Yaw', CONTROL_WINDOW) - 90
-                pitch = cv2.getTrackbarPos('Pitch', CONTROL_WINDOW) - 90
-                roll = cv2.getTrackbarPos('Roll', CONTROL_WINDOW) - 90
-                fov = max(10, cv2.getTrackbarPos('FOV', CONTROL_WINDOW))
-                dist_ratio = cv2.getTrackbarPos('Distort', CONTROL_WINDOW) / 100.0
+        stab_on = cv2.getTrackbarPos('Stab', CONTROL_WINDOW) == 1
+        track_on = stab_on and cv2.getTrackbarPos('Track', CONTROL_WINDOW) == 1
 
-                n_cnt += 1
-                now = time.perf_counter()
-                if now - n_t >= 1.0:
-                    n_fps = n_cnt / (now - n_t)
-                    n_cnt = 0; n_t = now
+        if stab_on:
+            out = stab.process_frame(rgb, q_center, q_top, q_bottom, yaw, pitch, roll, fov, dist_ratio)
+        else:
+            out = rgb
 
-                raw_w, raw_x, raw_y, raw_z = fields[6:10]
+        if track_on and frame_queue.empty():
+            pad = CFG["yolo"]["padding"]
+            padded = F.pad(out, (pad, pad, pad, pad), value=0.0)
+            _, _, ph, pw = padded.shape
+            scale = min(_YOLO_IN / pw, _YOLO_IN / ph)
+            new_w = int(pw * scale)
+            new_h = int(ph * scale)
+            resized = F.interpolate(padded, size=(new_h, new_w), mode="bilinear", align_corners=False)
+            pad_left = (_YOLO_IN - new_w) // 2
+            pad_top = (_YOLO_IN - new_h) // 2
+            pad_right = _YOLO_IN - new_w - pad_left
+            pad_bottom = _YOLO_IN - new_h - pad_top
+            yolo_input = F.pad(resized, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
+            frame_queue.put((yolo_input, scale, pad_left, pad_top))
 
-                # 👈 读取增益值 (除以10，将 10~50 映射为 1.0x ~ 5.0x)
-                gain_val = cv2.getTrackbarPos('Gain', CONTROL_WINDOW) / 10.0
-                
-                # 👈 打印 IMU 数据
-                #print(f"\U0001f9ed IMU [W,X,Y,Z] -> W: {raw_w:+.3f} | X: {raw_x:+.3f} | Y: {raw_y:+.3f} | Z: {raw_z:+.3f}")
+        output_w = CFG["resolution"]["output_w"]
+        output_h = CFG["resolution"]["output_h"]
+        r = output_w / output_h
+        
+        if stab_on:
+            if track_on:
+                cx, cy, crop_h = shared_crop.get_ideal_params()
+            else:
+                cx, cy = _STAB_W / 2.0, _STAB_H / 2.0
+                crop_h = _STAB_H
+                if crop_h * r > _STAB_W:
+                    crop_h = _STAB_W / r
+            crop_w = crop_h * r
+            half_w = crop_w / 2.0
+            half_h = crop_h / 2.0
+            x1 = int(max(0, cx - half_w))
+            y1 = int(max(0, cy - half_h))
+            x2 = int(min(_STAB_W, cx + half_w))
+            y2 = int(min(_STAB_H, cy + half_h))
 
-                q_top = align_imu(fields[2:6])
-                q_center = align_imu(fields[6:10])
-                q_bottom = align_imu(fields[10:14])
-                nv12_size = fields[14]
-                nv12_raw = recv_exact(sock, nv12_size)
+            if x2 > x1 and y2 > y1:
+                cropped = out[:, :, y1:y2, x1:x2]
+            else:
+                cropped = out
 
-                # 👈 传入增益值
-                rgb = jpeg_to_rgb_cuda(nv12_raw, gain=gain_val)
+            pad_left = np.clip(x1 - int(cx - half_w), 0, None)
+            pad_right = np.clip(int(cx + half_w) - x2, 0, None)
+            pad_top = np.clip(y1 - int(cy - half_h), 0, None)
+            pad_bottom = np.clip(int(cy + half_h) - y2, 0, None)
+            if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
+                cropped = F.pad(cropped, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
 
-                stab_on = cv2.getTrackbarPos('Stab', CONTROL_WINDOW) == 1
-                track_on = stab_on and cv2.getTrackbarPos('Track', CONTROL_WINDOW) == 1
+            out_final = F.interpolate(cropped, size=(output_h, output_w), mode="bilinear", align_corners=False)
+        else:
+            crop_h = _STAB_H
+            crop_w = crop_h * r
+            x_off = int((_STAB_W - crop_w) / 2)
+            cropped = out[:, :, 0:_STAB_H, x_off:x_off+int(crop_w)]
+            out_final = F.interpolate(cropped, size=(output_h, output_w), mode="bilinear", align_corners=False)
 
-                if stab_on:
-                    out = stab.process_frame(rgb, q_center, q_top, q_bottom, yaw, pitch, roll, fov, dist_ratio)
-                else:
-                    out = rgb
+        out_uint8 = (out_final.squeeze(0) * 255.0).clamp(0, 255).byte()
+        out_bgr = out_uint8.flip(0).permute(1, 2, 0)
+        preview = out_bgr.cpu().numpy()
 
-                if track_on and frame_queue.empty():
-                    pad = CFG["yolo"]["padding"]
-                    padded = F.pad(out, (pad, pad, pad, pad), value=0.0)
-                    _, _, ph, pw = padded.shape
-                    scale = min(_YOLO_IN / pw, _YOLO_IN / ph)
-                    new_w = int(pw * scale)
-                    new_h = int(ph * scale)
-                    resized = F.interpolate(padded, size=(new_h, new_w), mode="bilinear", align_corners=False)
-                    pad_left = (_YOLO_IN - new_w) // 2
-                    pad_top = (_YOLO_IN - new_h) // 2
-                    pad_right = _YOLO_IN - new_w - pad_left
-                    pad_bottom = _YOLO_IN - new_h - pad_top
-                    yolo_input = F.pad(resized, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
-                    frame_queue.put((yolo_input, scale, pad_left, pad_top))
+        g_cnt += 1
+        now = time.perf_counter()
+        if now - g_t >= 1.0:
+            g_fps = g_cnt / (now - g_t)
+            g_cnt = 0
+            g_t = now
 
-                if stab_on:
-                    if track_on:
-                        cx, cy, crop_size = shared_crop.get_ideal_params()
-                    else:
-                        cx, cy, crop_size = _STAB_W / 2.0, _STAB_H / 2.0, float(min(_STAB_W, _STAB_H))
+        n_fps = shared_controls["n_fps"]
 
-                    half = crop_size / 2.0
-                    x1_valid = int(max(0, cx - half))
-                    y1_valid = int(max(0, cy - half))
-                    x2_valid = int(min(_STAB_W, cx + half))
-                    y2_valid = int(min(_STAB_H, cy + half))
+        control_panel = np.zeros((320, 500, 3), dtype=np.uint8)
+        lens_name = CFG["cameras"][active_lens_key]["name"]
+        
+        mbps = shared_controls.get("mbps", 0.0)
+        mb_s = shared_controls.get("mb_s", 0.0)
+        
+        cv2.putText(control_panel, f"Net: {n_fps:.1f} FPS | GPU: {g_fps:.1f} FPS", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(control_panel, f"Bandwidth: {mbps:.1f} Mbps ({mb_s:.1f} MB/s)", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        cv2.putText(control_panel, f"Lens: {lens_name}", (20, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 255), 2)
+        cv2.putText(control_panel, "[Press 'S' to Hot-Swap Lens]", (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 255), 1)
+        
+        cv2.putText(control_panel, f"Stab: {'ON' if stab_on else 'OFF'}  Track: {'ON' if track_on else 'OFF'}", (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255) if stab_on else (100, 100, 100), 2)
+        cv2.putText(control_panel, f"Y:{yaw} P:{pitch} R:{roll}", (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        cv2.putText(control_panel, f"FOV:{fov} Dist:{dist_ratio:.2f}", (20, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        cv2.putText(control_panel, f"Crop: ({cx:.0f},{cy:.0f}) size={crop_size:.0f}", (20, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        
+        cv2.imshow(CONTROL_WINDOW, control_panel)
+        cv2.imshow(VIDEO_WINDOW, preview)
 
-                    if x2_valid > x1_valid and y2_valid > y1_valid:
-                        cropped = out[:, :, y1_valid:y2_valid, x1_valid:x2_valid]
-                    else:
-                        cropped = out
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+        elif key == ord("s"):
+            active_lens_key = "uw" if active_lens_key == "main" else "main"
+            print(f"\n[Lens Swap] 切换至镜头: {CFG['cameras'][active_lens_key]['name']}")
+            stab.load_lens(active_lens_key)
+            cv2.setTrackbarPos('FOV', CONTROL_WINDOW, CFG["cameras"][active_lens_key]["default_fov"])
 
-                    pad_left = int(x1_valid - (cx - half))
-                    pad_top = int(y1_valid - (cy - half))
-                    pad_right = int((cx + half) - x2_valid)
-                    pad_bottom = int((cy + half) - y2_valid)
-
-                    if pad_left > 0 or pad_right > 0 or pad_top > 0 or pad_bottom > 0:
-                        cropped = F.pad(cropped, (pad_left, pad_right, pad_top, pad_bottom), value=0.0)
-
-                    out_final = F.interpolate(cropped, size=(_OUT_SIZE, _OUT_SIZE), mode="bilinear", align_corners=False)
-                else:
-                    _, _, raw_h, raw_w = out.shape
-                    side = min(raw_h, raw_w)
-                    y_off = (raw_h - side) // 2
-                    x_off = (raw_w - side) // 2
-                    cropped = out[:, :, y_off:y_off+side, x_off:x_off+side]
-                    out_final = F.interpolate(cropped, size=(_OUT_SIZE, _OUT_SIZE), mode="bilinear", align_corners=False)
-                    pad_left = pad_right = pad_top = pad_bottom = cx = cy = crop_size = 0
-
-                out_uint8 = (out_final.squeeze(0) * 255.0).clamp(0, 255).byte()
-                out_bgr = out_uint8.flip(0).permute(1, 2, 0)
-                preview = out_bgr.cpu().numpy()
-
-                g_cnt += 1
-                now = time.perf_counter()
-                if now - g_t >= 1.0:
-                    g_fps = g_cnt / (now - g_t)
-                    g_cnt = 0; g_t = now
-
-                # ======= 控制面板 UI =======
-                control_panel = np.zeros((280, 500, 3), dtype=np.uint8)
-                lens_name = CFG["cameras"][active_lens_key]["name"]
-                
-                cv2.putText(control_panel, f"Net: {n_fps:.1f} FPS | GPU: {g_fps:.1f} FPS", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                # 提示用户热切换快捷键
-                cv2.putText(control_panel, f"Lens: {lens_name}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 255), 2)
-                cv2.putText(control_panel, "[Press 'S' to Hot-Swap Lens]", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 255), 1)
-                
-                cv2.putText(control_panel, f"Stab: {'ON' if stab_on else 'OFF'}  Track: {'ON' if track_on else 'OFF'}", (20, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255) if stab_on else (100, 100, 100), 2)
-                cv2.putText(control_panel, f"Y:{yaw} P:{pitch} R:{roll}", (20, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-                cv2.putText(control_panel, f"FOV:{fov} Dist:{dist_ratio:.2f}", (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-                cv2.putText(control_panel, f"Crop: ({cx:.0f},{cy:.0f}) size={crop_size:.0f}", (20, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-                
-                cv2.imshow(CONTROL_WINDOW, control_panel)
-                cv2.imshow(VIDEO_WINDOW, preview)
-
-                # ================= 监听键盘指令 =================
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    frame_queue.put(None)
-                    sock.close()
-                    cv2.destroyAllWindows()
-                    return
-                elif key == ord("s"):
-                    # 🔄 触发热切换逻辑
-                    active_lens_key = "uw" if active_lens_key == "main" else "main"
-                    print(f"\n[Lens Swap] 切换至镜头: {CFG['cameras'][active_lens_key]['name']}")
-                    
-                    # 1. 向 GPU 引擎热注入新矩阵
-                    stab.load_lens(active_lens_key)
-                    # 2. 自动把 FOV 滑块重置到该镜头最舒服的视野大小，防止画面突变
-                    cv2.setTrackbarPos('FOV', CONTROL_WINDOW, CFG["cameras"][active_lens_key]["default_fov"])
-
-        except (ConnectionError, OSError) as e:
-            print(f"\n[TCP] ⚠️ 连接断开: {e}，{reconnect_delay}s 后重连...")
-        except KeyboardInterrupt:
-            print("\n[Main] 用户中断")
-            frame_queue.put(None)
-            sock.close()
-            cv2.destroyAllWindows()
-            return
-        finally:
-            try: sock.close()
-            except Exception: pass
-
-        time.sleep(reconnect_delay)
+    exit_flag = True
+    frame_queue.put(None)
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
