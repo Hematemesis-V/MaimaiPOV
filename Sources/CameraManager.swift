@@ -231,6 +231,12 @@ class CameraManager: NSObject, ObservableObject {
             let fps60 = CMTime(value: 1, timescale: 60)
             device.activeVideoMinFrameDuration = fps60
             device.activeVideoMaxFrameDuration = fps60
+            
+            if device.isGeometricDistortionCorrectionSupported {
+                device.isGeometricDistortionCorrectionEnabled = false
+                print("CameraManager: 🚫 Geometric Distortion Correction DISABLED")
+            }
+            
             device.unlockForConfiguration()
             let d = format.formatDescription.dimensions
             print("CameraManager: Format \(d.width)x\(d.height) @ 60fps locked")
