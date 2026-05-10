@@ -26,7 +26,10 @@ struct ContentView: View {
             actionButtons
         }
         .preferredColorScheme(.dark)
-        .onAppear { setupCamera() }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = true
+            setupCamera()
+        }
         .onChange(of: cameraManager.isRunning) { isRunning in
             if isRunning {
                 let actualMin = Double(cameraManager.getMinISO())
