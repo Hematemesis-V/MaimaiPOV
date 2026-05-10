@@ -329,7 +329,7 @@ class ZeroCopyStabilizer:
         xa, _ = self._distort(rl[..., 0], rl[..., 1], rl[..., 2])
         x_frac = torch.clamp((self.fx * xa + self.cx) / self.w_in, 0.0, 1.0).unsqueeze(-1)
 
-        qp = F.normalize(qt * (1.0 - x_frac) + qb * x_frac, p=2, dim=-1)
+        qp = F.normalize(qt * x_frac + qb * (1.0 - x_frac), p=2, dim=-1)
 
         rl2 = self._q_rot(self._q_inv(qp), self.rays_w_cache)
         xf, yf = self._distort(rl2[..., 0], rl2[..., 1], rl2[..., 2])

@@ -36,7 +36,8 @@ class CameraManager: NSObject, ObservableObject {
     private var currentDuration: CMTime = CMTime(value: 1, timescale: 240)
     private var currentISO: Float = 0.0
 
-    var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
+    var onFrame: ((CVPixelBuffer, Double) -> Void)?
+    private var clockOffset: Double? = nil
 
     override init() {
         super.init()
@@ -407,8 +408,20 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapture
         }
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        onFrame?(pixelBuffer, timestamp)
+        let frameTime = CMTimeGetSeconds(timestamp)
+        let systemTime = ProcessInfo.processInfo.systemUptime
+        
+        if clockOffset == nil {
+            clockOffset = systemTime - frameTime
+        } else {
+            clockOffset = clockOffset! * 0.99 + (systemTime - frameTime) * 0.01
+        }
+        
+        let alignedFrameTime = frameTime + clockOffset!
+        
+        onFrame?(pixelBuffer, alignedFrameTime)
     }
 }
 

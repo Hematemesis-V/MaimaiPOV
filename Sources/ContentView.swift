@@ -231,14 +231,13 @@ struct ContentView: View {
         MotionManager.shared.startUpdates()
 
 
-        cameraManager.onFrame = { pixelBuffer, timestamp in
+        cameraManager.onFrame = { pixelBuffer, alignedFrameTime in
 
             // 性能限制，每2帧发送1帧
             //frameCounter += 1
             //if frameCounter % 2 != 0 { return }
 
-            let frameTime = CMTimeGetSeconds(timestamp)
-            let centerTime = frameTime + (syncOffset / 1000.0)
+            let centerTime = alignedFrameTime + (syncOffset / 1000.0)
             let topTime = centerTime - (readoutTimeMs / 2000.0)
             let bottomTime = centerTime + (readoutTimeMs / 2000.0)
 
