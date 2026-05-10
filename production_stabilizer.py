@@ -7,6 +7,8 @@ import threading
 import queue
 import numpy as np
 import sounddevice as sd
+import SpoutGL
+import OpenGL.GL as gl
 import torch
 import torch.nn.functional as F
 from ultralytics import YOLO
@@ -38,19 +40,19 @@ CFG = {
         
         "main": {
             "name": "Main (Full Frame)",
-            "fx": 681.64316686, "fy": 678.07553237,
+            "fx": 637.96525775, "fy": 637.53280269,
             "cx": 720.0,        "cy": 960.0,
-            "k1": 0.09888157,   "k2": -0.06466674,
-            "k3": 0.0287103,    "k4": -0.00650599,
+            "k1": 0.14130226,   "k2": -0.07536199,
+            "k3": 0.02657343,   "k4": -0.00507701,
             "default_fov": 100
         },
-        
+
         "uw": {
             "name": "Ultra-Wide (Circular)",
-            "fx": 385.42440948, "fy": 387.16735166,
-            "cx": 719.80053711, "cy": 893.22271729,
-            "k1": 0.05338301,   "k2": -0.00722338,
-            "k3": -0.00279242,  "k4": -0.00033171,
+            "fx": 405.67683956, "fy": 405.5596323,
+            "cx": 749.5,        "cy": 972.0,
+            "k1": 0.03639254,   "k2": 0.00303026,
+            "k3": -0.01138809,  "k4": 0.00258342,
             "default_fov": 145
         }
     },
@@ -111,6 +113,9 @@ audio_queue = queue.Queue(maxsize=50)
 shared_controls = {
     "gain": 1.0,
     "n_fps": 0.0,
+    "t_alpha": 0.1,
+    "t_speed": 5.0,
+    "t_deadz": 8.0,
 }
 
 exit_flag = False
@@ -398,18 +403,31 @@ def yolo_inference_thread():
                             smooth_x1, smooth_y1 = raw_x1, raw_y1
                             smooth_x2, smooth_y2 = raw_x2, raw_y2
                         else:
-                            dx1 = np.clip(raw_x1 - smooth_x1, -max_speed, max_speed)
-                            dy1 = np.clip(raw_y1 - smooth_y1, -max_speed, max_speed)
-                            dx2 = np.clip(raw_x2 - smooth_x2, -max_speed, max_speed)
-                            dy2 = np.clip(raw_y2 - smooth_y2, -max_speed, max_speed)
+                            current_alpha = shared_controls.get("t_alpha", 0.1)
+                            current_max_speed = shared_controls.get("t_speed", 5.0)
+                            current_deadzone = shared_controls.get("t_deadz", 8.0)
+
+                            raw_cx = (raw_x1 + raw_x2) / 2.0
+                            raw_cy = (raw_y1 + raw_y2) / 2.0
+                            smooth_cx = (smooth_x1 + smooth_x2) / 2.0
+                            smooth_cy = (smooth_y1 + smooth_y2) / 2.0
+                            center_dist = math.hypot(raw_cx - smooth_cx, raw_cy - smooth_cy)
+
+                            if center_dist > current_deadzone:
+                                dx1 = np.clip(raw_x1 - smooth_x1, -current_max_speed, current_max_speed)
+                                dy1 = np.clip(raw_y1 - smooth_y1, -current_max_speed, current_max_speed)
+                                dx2 = np.clip(raw_x2 - smooth_x2, -current_max_speed, current_max_speed)
+                                dy2 = np.clip(raw_y2 - smooth_y2, -current_max_speed, current_max_speed)
+                            else:
+                                dx1 = dy1 = dx2 = dy2 = 0.0
 
                             safe_x1, safe_y1 = smooth_x1 + dx1, smooth_y1 + dy1
                             safe_x2, safe_y2 = smooth_x2 + dx2, smooth_y2 + dy2
 
-                            smooth_x1 = alpha * safe_x1 + (1 - alpha) * smooth_x1
-                            smooth_y1 = alpha * safe_y1 + (1 - alpha) * smooth_y1
-                            smooth_x2 = alpha * safe_x2 + (1 - alpha) * smooth_x2
-                            smooth_y2 = alpha * safe_y2 + (1 - alpha) * smooth_y2
+                            smooth_x1 = current_alpha * safe_x1 + (1 - current_alpha) * smooth_x1
+                            smooth_y1 = current_alpha * safe_y1 + (1 - current_alpha) * smooth_y1
+                            smooth_x2 = current_alpha * safe_x2 + (1 - current_alpha) * smooth_x2
+                            smooth_y2 = current_alpha * safe_y2 + (1 - current_alpha) * smooth_y2
 
                         detected = True
                         break
@@ -538,19 +556,34 @@ def network_receiver_thread():
 # � 音频播放线程
 # ================================================================
 def audio_playback_thread():
-    SAMPLE_RATE = 48000
+    SAMPLE_RATE = 44100
     CHANNELS = 1
+
+    target_device_id = None
+    try:
+        devices = sd.query_devices()
+        for i, dev in enumerate(devices):
+            if "CABLE Input" in dev['name'] and dev['max_output_channels'] > 0:
+                target_device_id = i
+                print(f"[Audio] 🎯 锁定虚拟声卡: {dev['name']} (ID: {i})")
+                break
+    except Exception as e:
+        print(f"[Audio] ⚠️ 获取音频设备列表失败: {e}")
+
+    if target_device_id is None:
+        print("[Audio] ⚠️ 未找到 'CABLE Input' 虚拟声卡，回退到系统默认播放设备！请确认已安装 VB-Cable。")
 
     try:
         stream = sd.OutputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype="int16",
-            blocksize=1024,
-            latency="low",
+            latency=0.05,
+            device=target_device_id
         )
         stream.start()
-        print("[Audio] ✅ 音频播放流已启动 (48000Hz, 1ch, Int16)")
+        dev_name = target_device_id if target_device_id is not None else "System Default"
+        print(f"[Audio] ✅ 音频播放流已启动 (Device: {dev_name})")
     except Exception as e:
         print(f"[Audio] ❌ 音频流初始化失败: {e}")
         return
@@ -561,7 +594,10 @@ def audio_playback_thread():
             audio_np = np.frombuffer(audio_raw, dtype=np.int16)
             if CHANNELS == 1 and audio_np.ndim == 1:
                 audio_np = audio_np.reshape(-1, 1)
-            stream.write(audio_np)
+            try:
+                stream.write(audio_np)
+            except Exception as e:
+                print(f"[Audio] 写入错误: {e}")
         except queue.Empty:
             continue
         except Exception as e:
@@ -603,7 +639,10 @@ def init_trackbars(window_name, default_fov):
     cv2.createTrackbar('Pitch', window_name, 90, 180, nothing)   
     cv2.createTrackbar('Roll', window_name, 90, 180, nothing)    
     cv2.createTrackbar('FOV', window_name, default_fov, 160, nothing)    
-    cv2.createTrackbar('Distort', window_name, 100, 100, nothing) 
+    cv2.createTrackbar('Distort', window_name, 100, 100, nothing)
+    cv2.createTrackbar('T_Alpha', window_name, 10, 100, nothing)
+    cv2.createTrackbar('T_Speed', window_name, 5, 50, nothing)
+    cv2.createTrackbar('T_DeadZ', window_name, 8, 50, nothing) 
 
 # ================================================================
 # 🎮 主渲染循环 (消费者)
@@ -628,13 +667,14 @@ def main():
     audio_thread = threading.Thread(target=audio_playback_thread, daemon=True)
     audio_thread.start()
 
-    VIDEO_WINDOW = "Live Maimai Stream"
     CONTROL_WINDOW = "Live Control Panel"
-    
-    cv2.namedWindow(VIDEO_WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(VIDEO_WINDOW, output_w, output_h)
+
     cv2.namedWindow(CONTROL_WINDOW, cv2.WINDOW_AUTOSIZE)
     init_trackbars(CONTROL_WINDOW, CFG["cameras"][active_lens_key]["default_fov"])
+
+    sender = SpoutGL.SpoutSender()
+    sender.setSenderName("Maimai_POV")
+    print("[Spout2] ✅ 视频直通通道已建立，等待 OBS 抓取...")
 
     g_cnt = 0
     g_t = time.perf_counter()
@@ -657,6 +697,9 @@ def main():
         
         gain_val = cv2.getTrackbarPos('Gain', CONTROL_WINDOW) / 10.0
         shared_controls["gain"] = gain_val
+        shared_controls["t_alpha"] = max(1, cv2.getTrackbarPos('T_Alpha', CONTROL_WINDOW)) / 100.0
+        shared_controls["t_speed"] = float(max(1, cv2.getTrackbarPos('T_Speed', CONTROL_WINDOW)))
+        shared_controls["t_deadz"] = float(cv2.getTrackbarPos('T_DeadZ', CONTROL_WINDOW))
 
         q_top = align_imu(fields[2:6])
         q_center = align_imu(fields[6:10])
@@ -726,8 +769,8 @@ def main():
             out_final = F.interpolate(cropped, size=(output_h, output_w), mode="bilinear", align_corners=False)
 
         out_uint8 = (out_final.squeeze(0) * 255.0).clamp(0, 255).byte()
-        out_bgr = out_uint8.flip(0).permute(1, 2, 0)
-        preview = out_bgr.cpu().numpy()
+        out_rgb_np = out_uint8.permute(1, 2, 0).contiguous().cpu().numpy()
+        sender.sendImage(out_rgb_np, output_w, output_h, gl.GL_RGB, False, 0)
 
         g_cnt += 1
         now = time.perf_counter()
@@ -752,7 +795,7 @@ def main():
             crop_h = _STAB_H
             crop_w = crop_h * r
 
-        control_panel = np.zeros((320, 500, 3), dtype=np.uint8)
+        control_panel = np.zeros((360, 500, 3), dtype=np.uint8)
         lens_name = CFG["cameras"][active_lens_key]["name"]
         
         mbps = shared_controls.get("mbps", 0.0)
@@ -767,9 +810,9 @@ def main():
         cv2.putText(control_panel, f"Y:{yaw} P:{pitch} R:{roll}", (20, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
         cv2.putText(control_panel, f"FOV:{fov} Dist:{dist_ratio:.2f}", (20, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
         cv2.putText(control_panel, f"Crop: ({cx:.0f},{cy:.0f}) WxH: {crop_w:.0f}x{crop_h:.0f}", (20, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        cv2.putText(control_panel, f"Track Param -> Alpha: {shared_controls['t_alpha']:.2f} Spd: {shared_controls['t_speed']:.1f} DZ: {shared_controls['t_deadz']:.1f}", (20, 340), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 255, 100), 1)
         
         cv2.imshow(CONTROL_WINDOW, control_panel)
-        cv2.imshow(VIDEO_WINDOW, preview)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):

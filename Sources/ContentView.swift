@@ -8,7 +8,7 @@ struct ContentView: View {
     @State private var readoutTimeMs: Double = 9.18
     @State private var selectedLens: CameraManager.LensType = .main
     @State private var frameCounter = 0
-    @State private var shutterTimescale: Double = 240.0
+    @State private var shutterTimescale: Double = 244.0
     @State private var isoValue: Double = 50.0
     @State private var minISO: Double = 50.0
     @State private var maxISO: Double = 3200.0
@@ -152,9 +152,22 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(cameraManager.exposureMode == .custom ? .orange : .green)
             }
-            Slider(value: $shutterTimescale, in: 200...300, step: 1)
+            HStack {
+                Button("1/244") {
+                    shutterTimescale = 244.0
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(shutterTimescale == 244.0 ? .blue : .gray)
                 .disabled(cameraManager.exposureMode != .custom)
-                .opacity(cameraManager.exposureMode == .custom ? 1.0 : 0.4)
+                
+                Button("1/122") {
+                    shutterTimescale = 122.0
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(shutterTimescale == 122.0 ? .blue : .gray)
+                .disabled(cameraManager.exposureMode != .custom)
+            }
+            .opacity(cameraManager.exposureMode == .custom ? 1.0 : 0.4)
         }
         .padding(.horizontal)
     }
